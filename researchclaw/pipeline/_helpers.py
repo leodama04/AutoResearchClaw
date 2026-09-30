@@ -779,7 +779,9 @@ def _chat_with_prompt(
     messages = [{"role": "user", "content": user}]
     last_exc: Exception | None = None
     _effective_json_mode = json_mode
-    for attempt in range(1 + retries):
+    _json_mode_disabled_retry_used = False
+    attempt = 0
+    while True:
         try:
             if _effective_json_mode and max_tokens is not None:
                 return llm.chat(messages, system=system, json_mode=True, max_tokens=max_tokens, strip_thinking=strip_thinking)
@@ -790,16 +792,18 @@ def _chat_with_prompt(
             return llm.chat(messages, system=system, strip_thinking=strip_thinking)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            # Auto-disable json_mode on HTTP 400 — likely provider incompatibility
             _err_str = str(exc)
-            if _effective_json_mode and "400" in _err_str:
+            _just_disabled_json_mode = False
+            if _effective_json_mode and "400" in _err_str and not _json_mode_disabled_retry_used:
                 logger.warning(
                     "HTTP 400 with json_mode=True — disabling json_mode for retry "
                     "(provider may not support response_format)."
                 )
                 _effective_json_mode = False
-            if attempt < retries:
-                delay = 2 ** (attempt + 1)
+                _json_mode_disabled_retry_used = True
+                _just_disabled_json_mode = True
+            if attempt < retries or _just_disabled_json_mode:
+                delay = 2 ** (attempt + 1) if attempt < retries else 0
                 logger.warning(
                     "LLM call failed (attempt %d/%d): %s. Retrying in %ds...",
                     attempt + 1,
@@ -807,10 +811,11 @@ def _chat_with_prompt(
                     exc,
                     delay,
                 )
-                time.sleep(delay)
+                if delay:
+                    time.sleep(delay)
+                attempt += 1
             else:
                 raise last_exc from None
-    raise last_exc  # type: ignore[misc]  # unreachable but satisfies type checker
 
 
 def _get_evolution_overlay(
