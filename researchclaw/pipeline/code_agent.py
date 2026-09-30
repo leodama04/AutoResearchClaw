@@ -305,13 +305,26 @@ class CodeAgent:
             )
             self._log_event("  Injected domain context into blueprint prompt")
 
-        resp = self._chat(sp.system, sp.user, max_tokens=8192)
+        resp = self._chat(sp.system, sp.user, max_tokens=16384)
 
-        # Extract YAML block from response
+        # Extract YAML block from response. The model can (and does) run
+        # out of tokens mid-blueprint before emitting the closing fence -
+        # in that case there is no ``` to match against, so fall back to
+        # capturing everything after the opening fence instead of leaving
+        # the raw ```yaml marker in arch_spec (which fails to parse on the
+        # very first character).
         arch_spec = resp.content
         yaml_match = re.search(r"```ya?ml\s*\n(.*?)```", arch_spec, re.DOTALL)
         if yaml_match:
             arch_spec = yaml_match.group(1).strip()
+        else:
+            open_match = re.search(r"```ya?ml\s*\n(.*)", arch_spec, re.DOTALL)
+            if open_match:
+                arch_spec = open_match.group(1).strip()
+                self._log_event(
+                    "  Blueprint response has no closing fence (likely "
+                    "truncated) - using content after the opening fence"
+                )
 
         self._log_event(f"  Blueprint spec: {len(arch_spec)} chars")
 
@@ -452,6 +465,27 @@ class CodeAgent:
                     return data
             except Exception as exc:
                 self._log_event(f"  Blueprint YAML parse error: {exc}")
+
+        # Still-truncated response: the model ran out of tokens mid-structure
+        # and no full parse succeeded. Salvage a usable (partial) blueprint
+        # by dropping trailing lines one at a time until the remainder is
+        # valid YAML again - this typically lands right before the
+        # incomplete last file/method, keeping everything the model did
+        # manage to finish instead of discarding the whole blueprint.
+        lines = sanitized.split("\n")
+        for cut in range(1, min(len(lines), 40) + 1):
+            candidate = "\n".join(lines[:-cut])
+            if not candidate.strip():
+                break
+            try:
+                data = yaml.safe_load(candidate)
+            except Exception:
+                continue
+            if isinstance(data, dict) and "files" in data:
+                self._log_event(
+                    f"  Recovered truncated blueprint by dropping last {cut} line(s)"
+                )
+                return data
         return None
 
     @staticmethod
