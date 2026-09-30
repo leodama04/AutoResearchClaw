@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from researchclaw.adapters import AdapterBundle
+from researchclaw.agents.code_searcher.github_client import GitHubClient
 from researchclaw.config import RCConfig
 from researchclaw.llm.client import LLMClient
 from researchclaw.pipeline._helpers import (
@@ -89,12 +90,17 @@ _GITHUB_REPO_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/?#
 _GITHUB_IGNORED_OWNERS = {"topics", "search", "sponsors", "marketplace", "about", "features", "orgs"}
 
 
-def _find_github_repo_url(paper: dict[str, Any], web_search: WebSearchClient) -> str | None:
-    """Web-search for the official code repository of a paper.
+def _find_github_repo_url(
+    paper: dict[str, Any], web_search: WebSearchClient, github_client: GitHubClient
+) -> str | None:
+    """Find the official code repository of a paper.
 
-    Tries a couple of query variants built from the paper title and returns
-    the first plausible ``github.com/<owner>/<repo>`` URL found among the
-    results.
+    Tries a couple of web-search query variants built from the paper title
+    (DuckDuckGo/Tavily via ``web_search``) first, then falls back to the
+    GitHub Search API (``github_client``, no token required) when the web
+    search backend returns nothing or errors out — DDG's HTML scrape in
+    particular is known to be unreliable. Every dead end is logged so a
+    silent miss is distinguishable from "no repo exists for this paper".
     """
     title = str(paper.get("title", "")).strip()
     if not title:
@@ -103,7 +109,8 @@ def _find_github_repo_url(paper: dict[str, Any], web_search: WebSearchClient) ->
     for query in queries:
         try:
             response = web_search.search(query, max_results=5)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Web search failed for %r: %s", query, exc)
             continue
         for result in response.results:
             match = _GITHUB_REPO_RE.search(result.url)
@@ -113,6 +120,24 @@ def _find_github_repo_url(paper: dict[str, Any], web_search: WebSearchClient) ->
             if owner.lower() in _GITHUB_IGNORED_OWNERS:
                 continue
             return f"https://github.com/{owner}/{repo}.git"
+
+    # Fallback: GitHub Search API directly on the paper title.
+    try:
+        repos = github_client.search_repos(title, max_results=5)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("GitHub API search failed for %r: %s", title, exc)
+        repos = []
+    for repo in repos:
+        if not repo.full_name or "/" not in repo.full_name:
+            continue
+        owner = repo.full_name.split("/", 1)[0]
+        if owner.lower() in _GITHUB_IGNORED_OWNERS:
+            continue
+        return f"https://github.com/{repo.full_name}.git"
+
+    logger.warning(
+        "No GitHub repo found for paper %r via web search or GitHub API", title
+    )
     return None
 
 
@@ -157,11 +182,12 @@ def _clone_repos_for_shortlist(
     straight from disk instead of re-fetching them.
     """
     web_search = WebSearchClient()
+    github_client = GitHubClient()
     repos_dir = stage_dir / "code_repos"
     cloned: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for paper in shortlist[:max_repos]:
-        repo_url = _find_github_repo_url(paper, web_search)
+        repo_url = _find_github_repo_url(paper, web_search, github_client)
         if not repo_url or repo_url in seen_urls:
             continue
         seen_urls.add(repo_url)
