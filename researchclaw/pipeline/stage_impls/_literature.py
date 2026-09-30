@@ -669,7 +669,7 @@ def _execute_literature_collect(
 
 
 _MAX_ABSTRACT_LEN = 800  # Truncate long abstracts to reduce token usage
-_MAX_CANDIDATES_CHARS = 100_000  # Cap total candidates text sent to LLM
+_MAX_CANDIDATES_CHARS = 20_000  # Cap total candidates text sent to LLM (reduced for small local-model context windows)
 
 
 def _execute_literature_screen(
