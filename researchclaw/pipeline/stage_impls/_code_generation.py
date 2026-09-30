@@ -389,6 +389,46 @@ def _execute_code_generation(
         except Exception as _bp_exc:
             logger.debug("BA: Failed to load benchmark plan: %s", _bp_exc)
 
+    # --- Inject cloned reference-implementation repos from Stage 5 ---
+    _code_repos_text = _read_prior_artifact(run_dir, "code_repos.json")
+    if _code_repos_text:
+        try:
+            _repos_data = json.loads(_code_repos_text)
+            _cloned_repos = _repos_data.get("repos", []) if isinstance(_repos_data, dict) else []
+        except Exception:  # noqa: BLE001
+            _cloned_repos = []
+        _repo_lines = []
+        for _r in _cloned_repos[:3]:
+            _local_dir = Path(str(_r.get("local_path", "")))
+            _readme_excerpt = ""
+            for _readme_name in ("README.md", "readme.md", "README.rst"):
+                _readme_path = _local_dir / _readme_name
+                if _readme_path.is_file():
+                    try:
+                        _readme_excerpt = _readme_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )[:400].strip()
+                    except OSError:
+                        pass
+                    break
+            _line = f"- \"{_r.get('paper_title', '')}\" -> {_r.get('repo_url', '')}"
+            if _readme_excerpt:
+                _line += f"\n  README excerpt: {_readme_excerpt}"
+            _repo_lines.append(_line)
+        if _repo_lines:
+            extra_guidance += (
+                "\n\n## Reference Implementations (found via web search, for context only)\n"
+                "Official/community code repositories for some of the shortlisted papers "
+                "were cloned locally. Use them as a guide for realistic architecture, "
+                "hyperparameters, and evaluation methodology — do not assume they are "
+                "importable from this sandbox; reimplement the relevant parts directly.\n\n"
+                + "\n".join(_repo_lines)
+            )
+            logger.info(
+                "Stage 10: injected %d cloned reference repo(s) into prompt context",
+                len(_repo_lines),
+            )
+
     # --- P2.2+P2.3: LLM training topic detection and guidance ---
     _llm_keywords = (
         "language model", "llm", "fine-tun", "lora", "qlora", "peft",
