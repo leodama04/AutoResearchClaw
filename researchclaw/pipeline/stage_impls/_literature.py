@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from researchclaw.pipeline._helpers import (
 )
 from researchclaw.pipeline.stages import Stage, StageStatus
 from researchclaw.prompts import PromptManager
+from researchclaw.web.search import WebSearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,101 @@ def _expand_search_queries(queries: list[str], topic: str) -> list[str]:
             seen.add(variant.lower().strip())
 
     return expanded
+
+
+# ---------------------------------------------------------------------------
+# Repository cloning (paper -> GitHub repo -> local clone)
+# ---------------------------------------------------------------------------
+
+_GITHUB_REPO_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:[/?#]|$)")
+_GITHUB_IGNORED_OWNERS = {"topics", "search", "sponsors", "marketplace", "about", "features", "orgs"}
+
+
+def _find_github_repo_url(paper: dict[str, Any], web_search: WebSearchClient) -> str | None:
+    """Web-search for the official code repository of a paper.
+
+    Tries a couple of query variants built from the paper title and returns
+    the first plausible ``github.com/<owner>/<repo>`` URL found among the
+    results.
+    """
+    title = str(paper.get("title", "")).strip()
+    if not title:
+        return None
+    queries = [f'"{title}" github', f"{title} official implementation code"]
+    for query in queries:
+        try:
+            response = web_search.search(query, max_results=5)
+        except Exception:  # noqa: BLE001
+            continue
+        for result in response.results:
+            match = _GITHUB_REPO_RE.search(result.url)
+            if not match:
+                continue
+            owner, repo = match.group(1), match.group(2)
+            if owner.lower() in _GITHUB_IGNORED_OWNERS:
+                continue
+            return f"https://github.com/{owner}/{repo}.git"
+    return None
+
+
+def _clone_repo(repo_url: str, dest_dir: Path, *, timeout_sec: int = 120) -> Path | None:
+    """Shallow-clone ``repo_url`` into ``dest_dir`` and return the local path.
+
+    Skips the clone (returning the existing path) if it was already
+    downloaded by a previous run, and returns ``None`` on any failure so
+    callers can keep going without a repo for that paper.
+    """
+    repo_name = _safe_filename(repo_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git"))
+    target = dest_dir / repo_name
+    if target.is_dir():
+        return target
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", repo_url, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("git clone failed for %s: %s", repo_url, exc)
+        return None
+    if proc.returncode != 0:
+        logger.warning("git clone failed for %s: %s", repo_url, proc.stderr[-500:])
+        return None
+    return target
+
+
+def _clone_repos_for_shortlist(
+    shortlist: list[dict[str, Any]],
+    stage_dir: Path,
+    *,
+    max_repos: int = 5,
+) -> list[dict[str, Any]]:
+    """Find and locally clone code repositories for the top shortlisted papers.
+
+    Clones are written under ``stage_dir / "code_repos"`` so later pipeline
+    stages (e.g. code generation) can read reference implementations
+    straight from disk instead of re-fetching them.
+    """
+    web_search = WebSearchClient()
+    repos_dir = stage_dir / "code_repos"
+    cloned: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for paper in shortlist[:max_repos]:
+        repo_url = _find_github_repo_url(paper, web_search)
+        if not repo_url or repo_url in seen_urls:
+            continue
+        seen_urls.add(repo_url)
+        local_path = _clone_repo(repo_url, repos_dir)
+        if local_path is not None:
+            cloned.append({
+                "paper_title": paper.get("title", ""),
+                "cite_key": paper.get("cite_key", ""),
+                "repo_url": repo_url,
+                "local_path": str(local_path),
+            })
+    return cloned
 
 
 # ---------------------------------------------------------------------------
@@ -850,11 +947,37 @@ def _execute_literature_screen(
         )
     out = stage_dir / "shortlist.jsonl"
     _write_jsonl(out, shortlist)
+
+    # Clone code repositories for the shortlisted papers so later stages
+    # (e.g. code generation) have local reference implementations to draw on.
+    screen_artifacts = ["shortlist.jsonl"]
+    screen_evidence = ["stage-05/shortlist.jsonl"]
+    if config.web_search.enabled:
+        try:
+            cloned_repos = _clone_repos_for_shortlist(shortlist, stage_dir)
+        except Exception:  # noqa: BLE001
+            cloned_repos = []
+            logger.warning(
+                "Stage 5: repository cloning failed — continuing without cloned code",
+                exc_info=True,
+            )
+        if cloned_repos:
+            (stage_dir / "code_repos.json").write_text(
+                json.dumps({"repos": cloned_repos, "count": len(cloned_repos)}, indent=2),
+                encoding="utf-8",
+            )
+            screen_artifacts.append("code_repos.json")
+            screen_evidence.append("stage-05/code_repos.json")
+            logger.info(
+                "Stage 5: cloned %d code repositories for shortlisted papers",
+                len(cloned_repos),
+            )
+
     return StageResult(
         stage=Stage.LITERATURE_SCREEN,
         status=StageStatus.DONE,
-        artifacts=("shortlist.jsonl",),
-        evidence_refs=("stage-05/shortlist.jsonl",),
+        artifacts=tuple(screen_artifacts),
+        evidence_refs=tuple(screen_evidence),
     )
 
 
