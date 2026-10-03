@@ -273,6 +273,14 @@ class LLMClient:
 
         models = [model] if model else self._model_chain
         max_tok = max_tokens or self.config.max_tokens
+        try:  # ARC_MAX_TOKENS_MULT patch
+            import os as _os
+            _mult = float(_os.environ.get("ARC_MAX_TOKENS_MULT", "1"))
+            if _mult > 1:
+                _cap = int(_os.environ.get("ARC_MAX_TOKENS_CAP", "32768"))
+                max_tok = int(min(max_tok * _mult, max(_cap, max_tok)))
+        except ValueError:
+            pass
         temp = temperature if temperature is not None else self.config.temperature
 
         last_error: Exception | None = None

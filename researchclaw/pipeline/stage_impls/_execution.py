@@ -322,6 +322,21 @@ def _execute_experiment_run(
             result = sandbox.run(
                 code_text, timeout_sec=config.experiment.time_budget_sec
             )
+        # ARC patch: auto-repair on crash (see _stage12_repair.py)
+        try:
+            from researchclaw.pipeline.stage_impls._stage12_repair import repair_loop
+
+            result = repair_loop(
+                sandbox=sandbox,
+                result=result,
+                exp_dir=exp_dir_path,
+                stage_dir=stage_dir,
+                llm=llm,
+                timeout_sec=config.experiment.time_budget_sec,
+                parse_metrics=_parse_metrics_from_stdout,
+            )
+        except Exception as _arc_exc:  # noqa: BLE001
+            logger.warning("Stage 12 auto-repair skipped: %s", _arc_exc)
         # Try to read structured results.json from sandbox working dir
         structured_results: dict[str, Any] | None = None
         sandbox_project = runs_dir / "sandbox" / "_project"

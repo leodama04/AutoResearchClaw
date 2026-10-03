@@ -414,6 +414,14 @@ def _execute_code_generation(
             _line = f"- \"{_r.get('paper_title', '')}\" -> {_r.get('repo_url', '')}"
             if _readme_excerpt:
                 _line += f"\n  README excerpt: {_readme_excerpt}"
+            try:
+                from researchclaw.pipeline.stage_impls._repo_context import (
+                    repo_source_excerpts,
+                )
+
+                _line += repo_source_excerpts(_local_dir)
+            except Exception as _rc_exc:  # noqa: BLE001
+                logger.debug("repo source excerpts failed: %s", _rc_exc)
             _repo_lines.append(_line)
         if _repo_lines:
             extra_guidance += (

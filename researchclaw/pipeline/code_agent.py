@@ -458,7 +458,16 @@ class CodeAgent:
                 sanitized_lines.append(line)
         sanitized = "\n".join(sanitized_lines)
 
-        for attempt_text in (sanitized, yaml_text):
+        # ARC patch: tentativi extra con sanificatore piu' tollerante
+        try:
+            from researchclaw.pipeline._blueprint_yaml_fix import (
+                extra_candidates as _arc_extra,
+            )
+
+            _arc_cands = _arc_extra(sanitized, yaml_text)
+        except Exception:  # noqa: BLE001
+            _arc_cands = []
+        for attempt_text in (sanitized, yaml_text, *_arc_cands):
             try:
                 data = yaml.safe_load(attempt_text)
                 if isinstance(data, dict) and "files" in data:
