@@ -1,0 +1,149 @@
+{
+  "description": "Architecture search space for the refinement loop in config mode. The training recipe is fixed and is NOT part of the space.",
+  "config_file": "rb_config.py",
+  "variable": "PROPOSED_OVERRIDES",
+  "max_keys_changed_per_step": 3,
+  "defaults": {
+    "gnn_type": "sage",
+    "num_layers": 2,
+    "channels": 128,
+    "aggr": "sum",
+    "norm": "batch_norm",
+    "dropout": 0.0,
+    "residual": false,
+    "heads": 4,
+    "jk": "last",
+    "enc_layers": 4,
+    "enc_width": 128,
+    "enc_dropout": 0.2,
+    "time_encoding": true,
+    "head_layers": 1
+  },
+  "space": {
+    "gnn_type": {
+      "values": [
+        "sage",
+        "gatv2",
+        "gin",
+        "transformer",
+        "resgated"
+      ],
+      "doc": "message-passing operator applied on every edge type of the heterogeneous graph (GraphSAGE is the official baseline)"
+    },
+    "num_layers": {
+      "values": [
+        1,
+        2,
+        3
+      ],
+      "doc": "number of message-passing layers; 3 is much slower because every seed's temporal subgraph then reaches most of the database"
+    },
+    "channels": {
+      "values": [
+        32,
+        64,
+        128,
+        256
+      ],
+      "doc": "hidden width of node embeddings"
+    },
+    "aggr": {
+      "values": [
+        "sum",
+        "mean",
+        "max"
+      ],
+      "doc": "neighbour aggregation; only used when gnn_type is sage"
+    },
+    "norm": {
+      "values": [
+        "batch_norm",
+        "layer_norm"
+      ],
+      "doc": "normalisation inside the readout MLP head"
+    },
+    "dropout": {
+      "values": [
+        0.0,
+        0.1,
+        0.2,
+        0.3
+      ],
+      "doc": "dropout after each message-passing layer"
+    },
+    "residual": {
+      "values": [
+        false,
+        true
+      ],
+      "doc": "residual connections between message-passing layers"
+    },
+    "heads": {
+      "values": [
+        2,
+        4,
+        8
+      ],
+      "doc": "attention heads; only used when gnn_type is gatv2 or transformer"
+    },
+    "jk": {
+      "values": [
+        "last",
+        "cat"
+      ],
+      "doc": "jumping knowledge: 'cat' concatenates the input and all layer outputs, then projects"
+    },
+    "enc_layers": {
+      "values": [
+        2,
+        4,
+        6
+      ],
+      "doc": "depth of the per-table feature encoder (PyTorch Frame ResNet)"
+    },
+    "enc_width": {
+      "values": [
+        64,
+        128,
+        256
+      ],
+      "doc": "inner width of the feature encoder"
+    },
+    "enc_dropout": {
+      "values": [
+        0.0,
+        0.1,
+        0.2,
+        0.4
+      ],
+      "doc": "dropout inside the feature encoder"
+    },
+    "time_encoding": {
+      "values": [
+        true,
+        false
+      ],
+      "doc": "add the relative-time encoding of each node to its features"
+    },
+    "head_layers": {
+      "values": [
+        1,
+        2
+      ],
+      "doc": "depth of the readout MLP"
+    }
+  },
+  "relevant_if": {
+    "heads": {
+      "gnn_type": [
+        "gatv2",
+        "transformer"
+      ]
+    },
+    "aggr": {
+      "gnn_type": [
+        "sage"
+      ]
+    }
+  }
+}

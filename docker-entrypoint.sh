@@ -2,6 +2,11 @@
 # Avvia llama-server in background, aspetta /health, poi esegue il comando richiesto.
 set -uo pipefail
 
+# ARC_NO_LLM=1: esegue il comando senza avviare llama-server (test di fumo, baseline)
+if [ "${ARC_NO_LLM:-0}" = "1" ]; then
+    exec "$@"
+fi
+
 MODEL_PATH="${MODEL_PATH:-/llms/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf}"
 MODEL_ALIAS="${MODEL_ALIAS:-qwen3.6-35b}"
 LLAMA_PORT="${LLAMA_PORT:-8081}"

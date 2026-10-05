@@ -1,0 +1,130 @@
+# syntax=docker/dockerfile:1
+#
+# Immagine per RelBench: llama.cpp (CUDA) + AutoResearchClaw + stack GNN (PyG, PyTorch Frame,
+# relbench 1.1.0) con dataset rel-f1 e modello GloVe pre-scaricati (nessun download a runtime).
+# Build dalla cartella del repo:
+#   docker build -f Dockerfile.arc-relbench -t arc-relbench:latest .
+#
+# Argomenti di build utili:
+#   --build-arg CUDA_ARCHS="120"      (RTX 5090=120, 4090/L40=89, H100=90, A100=80)
+#   --build-arg CUDA_VERSION=12.4.1   (se il driver del cluster e' vecchio)
+#   --build-arg WITH_LATEX=false      (immagine piu' leggera, niente compilazione PDF)
+#   --build-arg TORCH_VERSION=2.8.0 --build-arg PYG_WHL_TAG=2.8.0+cu128   (devono esistere su data.pyg.org)
+
+ARG CUDA_VERSION=12.8.1
+ARG UBUNTU=ubuntu24.04
+
+# ---------------------------------------------------------------------------
+# Stage 1: compila llama-server con CUDA
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-devel-${UBUNTU} AS llama-build
+
+ARG CUDA_ARCHS="120"
+ARG LLAMA_CPP_REF=master
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git cmake build-essential ca-certificates libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/llama.cpp .
+
+RUN cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_CUDA=ON \
+        -DGGML_NATIVE=OFF \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHS}" \
+        -DLLAMA_CURL=OFF \
+        -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+    && cmake --build build --config Release --target llama-server -j"$(nproc)" \
+    && mkdir -p /opt/llama \
+    && cp build/bin/llama-server /opt/llama/ \
+    && (cp build/bin/*.so* /opt/llama/ 2>/dev/null || true)
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime con Python + AutoResearchClaw + stack RelBench
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-${UBUNTU}
+
+ARG WITH_LATEX=true
+ARG TORCH_VERSION=2.8.0
+ARG TORCHVISION_VERSION=0.23.0
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
+ARG PYG_WHL_TAG=2.8.0+cu128
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential git curl ca-certificates \
+        libgomp1 libssl3t64 \
+    && if [ "$WITH_LATEX" = "true" ]; then \
+         apt-get install -y --no-install-recommends \
+           texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended \
+           texlive-science texlive-bibtex-extra latexmk ; \
+       fi \
+    && rm -rf /var/lib/apt/lists/*
+
+# Vincoli validi per TUTTI i pip install (anche quelli fatti a runtime dalla pipeline):
+#  - pandas<3: relbench 1.1.0 non funziona con pandas 3 (to_unix_time accetta solo datetime64[s|ns]);
+#  - torch fissato: pyg-lib esiste solo per versioni precise di torch;
+RUN printf 'pandas<3\ntorch==%s\n' "${TORCH_VERSION}" > /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
+# Torch con CUDA 12.8 (Blackwell/RTX 5090 incluso) + librerie scientifiche
+RUN pip install "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" --index-url "${TORCH_INDEX}" \
+ && pip install numpy scipy "pandas<3" matplotlib seaborn scikit-learn pillow
+
+# Vincoli per il modello GloVe "legacy": sentence-transformers<6 + transformers<5 e' la coppia collaudata
+# (senza vincolo pip sceglie ST 6.1 + transformers 5.18, due major nuove mai provate con quel modello).
+RUN printf 'transformers<5\nsentence-transformers<6\n' >> /etc/pip-constraints.txt
+
+# Stack RelBench v1: relbench 1.1.0, PyG, PyTorch Frame, GloVe (sentence-transformers), LightGBM.
+# pyg-lib NON e' su PyPI: serve per il campionamento temporale di NeighborLoader.
+RUN pip install "relbench==1.1.0" torch_geometric pytorch_frame "sentence-transformers<6" "transformers<5" lightgbm \
+ && pip install pyg-lib -f "https://data.pyg.org/whl/torch-${PYG_WHL_TAG}.html"
+RUN python3 -c "import torch, pyg_lib, torch_geometric, torch_frame, relbench, pandas, sentence_transformers, transformers; \
+from torch_geometric.loader import NeighborLoader; \
+print('torch', torch.__version__, '| pandas', pandas.__version__, '| pyg', torch_geometric.__version__, \
+'| ST', sentence_transformers.__version__, '| transformers', transformers.__version__, '| pyg-lib OK')"
+
+# Cache di RelBench e Hugging Face in percorsi condivisi (pooch rispetta XDG_CACHE_HOME).
+# Il prefetch e' robusto agli hash non piu' validi sul server di RelBench (vedi rb_loader.py).
+ENV XDG_CACHE_HOME=/opt/cache \
+    HF_HOME=/opt/hf_cache
+COPY rb_task/tests/prefetch.py rb_task/seed_project/rb_loader.py /tmp/
+RUN mkdir -p /opt/cache /opt/hf_cache \
+ && python3 /tmp/prefetch.py \
+ && chmod -R a+rwX /opt/cache /opt/hf_cache \
+ && rm -f /tmp/prefetch.py /tmp/rb_loader.py
+ENV HF_HUB_OFFLINE=1
+
+# Esempi ufficiali di RelBench v1.1.0 (baseline di riferimento: ./run.sh baseline)
+RUN git clone --depth 1 --branch v1.1.0 https://github.com/snap-stanford/relbench.git /tmp/relbench_src \
+ && mkdir -p /opt/relbench && cp -r /tmp/relbench_src/examples /opt/relbench/ && rm -rf /tmp/relbench_src
+
+# llama-server
+COPY --from=llama-build /opt/llama /opt/llama
+ENV LD_LIBRARY_PATH=/opt/llama
+
+# AutoResearchClaw (editable: a runtime montiamo la stessa cartella su /app)
+WORKDIR /app
+COPY . /app
+RUN pip install -e ".[all]"
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENV MODEL_PATH=/llms/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
+    MODEL_ALIAS=qwen3.6-35b \
+    LLAMA_PORT=8081 \
+    LLAMA_CTX=32768 \
+    LLAMA_NGL=99 \
+    LLAMA_STARTUP_TIMEOUT=900 \
+    LLAMA_EXTRA_ARGS="" \
+    LLAMACPP_API_KEY=none
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["bash"]
