@@ -155,6 +155,18 @@ def _harness_source(stage_dir: Path) -> str:
     return ""
 
 
+def _task_spec_suffix() -> str:
+    """Optional task specification (env ARC_TASK_SPEC_FILE) appended to the repair prompt."""
+    path = os.environ.get("ARC_TASK_SPEC_FILE", "").strip()
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return f"\n\n=== TASK SPECIFICATION (authoritative) ===\n{text}" if text else ""
+
+
 def _build_prompt(work: Path, err: str, stage_dir: Path, budget_sec: int) -> str:
     harness = _harness_source(stage_dir)
     return (
@@ -184,6 +196,7 @@ def _build_prompt(work: Path, err: str, stage_dir: Path, budget_sec: int) -> str
         "new lines\n"
         ">>>>>>> REPLACE\n\n"
         "You may output several blocks, for several files."
+        + _task_spec_suffix()
     )
 
 

@@ -145,3 +145,10 @@ experiments/arc_bench/batch_logs/
 # README is tracked; any local checkout placed here stays local.
 external/agents/ColliderAgent/*
 !external/agents/ColliderAgent/README.md
+
+# AutoResearchClaw / RelBench kit
+*.bak
+__pycache__/
+llama-server.log
+relbench_kit.zip
+rb_task/task_spec/METHOD_GROUND_TRUTH.md

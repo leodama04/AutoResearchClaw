@@ -187,7 +187,7 @@ class PromptManager:
         dropped so a typo in config.yaml never silently disappears.
         """
         for stage, value in spec.items():
-            if stage not in self._stages:
+            if stage not in self._stages and stage not in self._sub_prompts:
                 logger.warning(
                     "prompts.extra_prompts: unknown stage %r — available: %s",
                     stage, ", ".join(sorted(self._stages.keys())),
@@ -275,9 +275,25 @@ class PromptManager:
         """Return a rendered sub-prompt (e.g. code_repair)."""
         entry = self._sub_prompts[name]
         kw = {k: str(v) for k, v in kwargs.items()}
+        user_text = _render(entry["user"], kw)
+        if __import__("os").environ.get("ARC_KEEP_SEEDS") == "1":  # ARC patch: seed policy
+            user_text = __import__("re").sub(
+                r"SEED ENFORCEMENT \(MANDATORY[^\n]*\n(?:- [^\n]*\n)+",
+                "SEED POLICY: keep the seeds and the number of seeds defined by the existing code "
+                "(rb_config.SEEDS); never reduce the number of seeds and never hard-code them.\n",
+                user_text,
+            )
+        extra = self._extras.get(name, "")  # ARC patch: extras for sub-prompts
+        if extra:
+            user_text = (
+                f"{user_text}\n\n"
+                "## Additional Stage Guidance\n"
+                "_(from prompts.extra_prompts in config.yaml)_\n\n"
+                f"{extra}"
+            )
         return RenderedPrompt(
             system=_render(entry["system"], kw),
-            user=_render(entry["user"], kw),
+            user=user_text,
         )
 
     # -- debate roles (domain-specific) -----------------------------------

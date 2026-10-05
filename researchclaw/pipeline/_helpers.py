@@ -666,7 +666,9 @@ def _extract_multi_file_blocks(content: str) -> dict[str, str]:
                 files[fname] = code.strip()
         if files:
             # Ensure there is a main.py entry point
-            if "main.py" not in files:
+            if "main.py" not in files and __import__("os").environ.get(
+                "ARC_PRESERVE_FILENAMES"
+            ) != "1":  # ARC patch: preserve filenames
                 # Pick the first file as main.py
                 first_key = next(iter(files))
                 files["main.py"] = files.pop(first_key)

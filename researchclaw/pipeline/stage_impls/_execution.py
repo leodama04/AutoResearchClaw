@@ -823,6 +823,12 @@ def _execute_iterative_refine(
                 continue
             # R5-5: Truncate stdout/stderr for context efficiency
             summary = dict(payload)
+            try:  # ARC patch: stage13 refine (hide test metrics)
+                from researchclaw.pipeline.stage_impls._arc_refine import hide_test
+
+                summary = hide_test(summary)
+            except Exception:  # noqa: BLE001
+                pass
             if "stdout" in summary and isinstance(summary["stdout"], str):
                 lines = summary["stdout"].splitlines()
                 if len(lines) > 30:
@@ -936,6 +942,14 @@ def _execute_iterative_refine(
         )
     no_improve_streak = 0
     consecutive_no_metrics = 0
+    try:  # ARC patch: stage13 modes
+        from researchclaw.pipeline.stage_impls import _arc_refine as _arc
+
+        _arc_state = _arc.ModeState(run_dir, stage_dir, config.research.topic)
+    except Exception as _arc_exc:  # noqa: BLE001
+        logger.warning("Stage 13: ARC modes unavailable: %s", _arc_exc)
+        _arc = None
+        _arc_state = None
 
     log: dict[str, Any] = {
         "generated": _utcnow_iso(),
@@ -1109,6 +1123,7 @@ def _execute_iterative_refine(
                 logger.warning("Stage 13: metric saturation detected, injecting difficulty upgrade hint")
 
         files_context = _files_to_context(best_files)
+        _arc_prev_best = dict(best_files)  # ARC patch: stage13 refine
         # BUG-10 fix: anchor refinement to original experiment plan
         _exp_plan_anchor = ""
         if _exp_plan_text.strip():
@@ -1149,12 +1164,18 @@ def _execute_iterative_refine(
             )
 
         try:
-            response = _chat_with_prompt(
-                llm,
-                ip.system,
-                user_prompt,
-                max_tokens=ip.max_tokens or 8192,
-            )
+            if _arc_state is not None and _arc_state.config_mode:  # ARC patch: stage13 modes
+                response = _arc.propose_config(
+                    _chat_with_prompt, llm, _arc_state, best_files, log, iteration,
+                    best_metric, baseline_metric,
+                )
+            else:
+                response = _chat_with_prompt(
+                    llm,
+                    ip.system,
+                    user_prompt,
+                    max_tokens=ip.max_tokens or 8192,
+                )
         except RuntimeError as exc:
             if "ACP prompt timed out after" in str(exc):
                 logger.warning(
@@ -1180,6 +1201,17 @@ def _execute_iterative_refine(
             candidate_files.update(extracted_files)
         # If LLM returned nothing at all, candidate_files == best_files (unchanged)
 
+        if _arc_state is not None:  # ARC patch: stage13 modes (guard)
+            try:
+                candidate_files, _arc_notes = _arc.guard_candidate(
+                    best_files, candidate_files, _arc_state.space, _arc_state.protected
+                )
+                if _arc_notes:
+                    logger.warning(
+                        "Stage 13 iteration %d guard: %s", iteration, "; ".join(_arc_notes[:4])
+                    )
+            except Exception as _g_exc:  # noqa: BLE001
+                logger.warning("Stage 13: guard failed: %s", _g_exc)
         # BUG-R6-02: Preserve entry point when LLM strips main() function.
         # The LLM often returns only class/function improvements without the
         # main() entry point, causing the script to exit with no output.
@@ -1257,6 +1289,8 @@ def _execute_iterative_refine(
         }
         if issue_text:
             iter_record["validation_issues"] = issue_text
+        if _arc_state is not None:  # ARC patch: stage13 modes
+            _arc.annotate(iter_record, _arc_state)
 
         metric_val = None  # R6-3: initialize before conditional block
         if validation.ok and config.experiment.mode in ("sandbox", "docker"):
@@ -1273,6 +1307,7 @@ def _execute_iterative_refine(
                 version_dir,
                 timeout_sec=config.experiment.time_budget_sec,
             )
+            _arc_final_run = rerun  # ARC patch: stage13 modes
             metric_val = _find_metric(rerun.metrics, metric_key)
             # R19-1: Store stdout (capped) so PAIRED lines survive for Stage 14
             _stdout_cap = rerun.stdout[:50000] if rerun.stdout else ""
@@ -1334,7 +1369,11 @@ def _execute_iterative_refine(
                         )
 
             # --- Detect runtime issues (NaN/Inf, stderr warnings) ---
-            runtime_issues = _detect_runtime_issues(rerun)
+            runtime_issues = (  # ARC patch: stage13 modes (no code repair in config mode)
+                None
+                if (_arc_state is not None and _arc_state.config_mode)
+                else _detect_runtime_issues(rerun)
+            )
             if runtime_issues:
                 iter_record["runtime_issues"] = runtime_issues
                 logger.info(
@@ -1385,6 +1424,7 @@ def _execute_iterative_refine(
                         timeout_sec=config.experiment.time_budget_sec,
                     )
                     metric_val = _find_metric(rerun2.metrics, metric_key)
+                    _arc_final_run = rerun2  # ARC patch: stage13 modes
                     iter_record["sandbox_after_fix"] = {
                         "returncode": rerun2.returncode,
                         "metrics": rerun2.metrics,
@@ -1394,10 +1434,20 @@ def _execute_iterative_refine(
                     iter_record["metric"] = metric_val
                     iter_record["runtime_repaired"] = True
 
+            if _arc_state is not None and _arc_state.gate_enabled and metric_val is not None:
+                _ok, _why = _arc.run_is_valid(_arc_final_run, _arc_state.expected, metric_key)  # ARC patch: gate
+                if not _ok:
+                    logger.warning("Stage 13 iteration %d: run rejected (%s)", iteration, _why)
+                    iter_record["arc_rejected"] = _why
+                    iter_record["metric"] = None
+                    metric_val = None
             if metric_val is not None:
                 consecutive_no_metrics = 0
                 # R6-1: Only count toward no_improve_streak when we have real metrics
-                if _is_better(metric_val, best_metric):
+                if _is_better(metric_val, best_metric) and (  # ARC patch: noise margin
+                    _arc_state is None
+                    or _arc.margin_ok(metric_val, best_metric, metric_direction, _arc_state.margin)
+                ):
                     best_metric = metric_val
                     best_files = dict(candidate_files)
                     best_version = f"experiment_v{iteration}/"
@@ -1415,13 +1465,25 @@ def _execute_iterative_refine(
         _metrics_history.append(metric_val)
 
         log["iterations"].append(iter_record)
+        try:  # ARC patch: stage13 refine (history for the next attempt)
+            from researchclaw.pipeline.stage_impls._arc_refine import history_line
+
+            run_summaries.append(
+                history_line(
+                    iteration, iter_record, _arc_prev_best, candidate_files, best_metric
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         if consecutive_no_metrics >= 3:
             log["stop_reason"] = "consecutive_no_metrics"
             logger.warning("Stage 13: Aborting after %d consecutive iterations without metrics", consecutive_no_metrics)
             break
 
-        if no_improve_streak >= 2:
+        if no_improve_streak >= int(
+            __import__("os").environ.get("ARC_REFINE_PATIENCE", "2") or 2
+        ):  # ARC patch: stage13 refine
             log["converged"] = True
             log["stop_reason"] = "no_improvement_for_2_iterations"
             logger.info(
@@ -1433,6 +1495,14 @@ def _execute_iterative_refine(
 
     # Write final experiment directory
     final_dir = stage_dir / "experiment_final"
+    if _arc_state is not None and _arc_state.confirm_offset:  # ARC patch: confirmation on fresh seeds
+        try:
+            _arc.confirm(
+                _arc_state, config, stage_dir, best_files, best_version, log,
+                create_sandbox, _write_project, logger,
+            )
+        except Exception as _c_exc:  # noqa: BLE001
+            logger.warning("Stage 13: confirmation failed: %s", _c_exc)
     _write_project(final_dir, best_files)
     # Backward compat: also write experiment_final.py (copy of main.py)
     if "main.py" in best_files:

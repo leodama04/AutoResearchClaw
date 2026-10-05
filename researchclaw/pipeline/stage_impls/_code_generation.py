@@ -539,6 +539,32 @@ def _execute_code_generation(
     _beast_mode_used = False
     _code_max_tokens = 8192
 
+    # ARC patch: seed project -- start from an existing baseline instead of
+    # LLM-generated code (set ARC_SEED_PROJECT_DIR to a dir containing main.py).
+    import os as _arc_os
+
+    _arc_seeded = False
+    _arc_seed_dir = _arc_os.environ.get("ARC_SEED_PROJECT_DIR", "").strip()
+    if _arc_seed_dir and Path(_arc_seed_dir).is_dir():
+        _arc_seed_files = {
+            _p.name: _p.read_text(encoding="utf-8")
+            for _p in sorted(Path(_arc_seed_dir).glob("*.py"))
+        }
+        if "main.py" in _arc_seed_files:
+            files = dict(_arc_seed_files)
+            _arc_seeded = True
+            _beast_mode_used = True  # skips Beast Mode / CodeAgent / single-shot
+            _code_agent_active = True  # skips the LLM code-review step
+            logger.warning(
+                "Stage 10: SEEDED from %s (%d files) - LLM code generation skipped",
+                _arc_seed_dir,
+                len(files),
+            )
+        else:
+            logger.warning(
+                "Stage 10: ARC_SEED_PROJECT_DIR=%s has no main.py - ignoring", _arc_seed_dir
+            )
+
     # ── Beast Mode: OpenCode external agent (optional) ─────────────────
     _oc_cfg = config.experiment.opencode
     if _oc_cfg.enabled:
@@ -1046,7 +1072,7 @@ def _execute_code_generation(
                            "identical AST", "NOT a real ablation",
                            "shadows stdlib/pip")
     )]
-    if critical_deep and llm is not None:
+    if critical_deep and llm is not None and not _arc_seeded:
         logger.info(
             "Stage 10: %d critical code issues found — triggering repair cycle",
             len(critical_deep),
@@ -1249,7 +1275,7 @@ def _execute_code_generation(
     # includes file inventory + full main.py + per-file function/class headers.
     alignment_ok = True
     alignment_note = ""
-    if llm is not None:
+    if llm is not None and not _arc_seeded:
         # Build structured code summary for alignment check
         _file_inventory = []
         for _fn, _cd in files.items():
@@ -1451,7 +1477,7 @@ def _execute_code_generation(
 
     # --- FIX-7: Ablation distinctness check ---
     main_code = files.get("main.py", "")
-    if llm is not None and main_code and "condition" in main_code.lower():
+    if llm is not None and not _arc_seeded and main_code and "condition" in main_code.lower():
         try:
             ablation_prompt = (
                 f"Examine this experiment code:\n```python\n{main_code[:6000]}\n```\n\n"
