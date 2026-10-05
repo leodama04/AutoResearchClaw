@@ -1,0 +1,7 @@
+date: 2026-10-04T18:54:14+00:00
+command: ./run.sh smoke 
+kit: relbench-kit 0.3 (2026-10-04): config search mode, validity gate, file guard, filename-preservation fix, run documentation
+git: b9c1496 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
