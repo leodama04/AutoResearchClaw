@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 _SKIP_DIRS = {
-    "tests", "test", "docs", "doc", "examples", "node_modules",
+    "tests", "test", "docs", "doc", "node_modules",
     "venv", "build", "dist", "data", "datasets", "figures", "notebooks",
 }
 _SKIP_FILES = {"setup.py", "__init__.py", "conftest.py"}
@@ -15,9 +15,15 @@ _PREFER = (("dropout", 4), ("mlp", 3), ("model", 2), ("net", 2), ("layer", 2),
            ("train", 1), ("main", 1))
 
 
-def _score(name: str) -> int:
+def _score(name: str, repo: str = "") -> int:
     n = name.lower()
-    return sum(w for key, w in _PREFER if key in n)
+    score = sum(w for key, w in _PREFER if key in n)
+    if "conv" in n:
+        score += 3
+    repo_tok = repo.lower().replace("-", "").replace("_", "")
+    if repo_tok and repo_tok in n.replace("-", "").replace("_", ""):
+        score += 5  # e.g. relgnn_conv.py in the RelGNN repo: the paper's own method
+    return score
 
 
 def repo_source_excerpts(
@@ -44,7 +50,7 @@ def repo_source_excerpts(
             continue
         if size < 200 or size > 200_000:
             continue
-        candidates.append((-_score(p.name), size, str(rel), p))
+        candidates.append((-_score(p.name, local_dir.name), size, str(rel), p))
 
     candidates.sort(key=lambda t: (t[0], t[1]))
 

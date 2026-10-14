@@ -263,6 +263,13 @@ def _execute_search_strategy(
             src = payload.get("sources", [])
             if isinstance(src, list):
                 sources = [item for item in src if isinstance(item, dict)]
+    if plan is None and llm is not None:  # ARC patch: rescue LLM queries
+        try:
+            from researchclaw.pipeline.stage_impls._arc_knowledge import rescue_plan
+
+            plan = rescue_plan(locals().get("payload"), getattr(locals().get("resp"), "content", ""), topic)
+        except Exception:  # noqa: BLE001
+            plan = None
     model_plan_parsed = plan is not None
     if plan is None:
         # Build smart fallback queries by extracting key terms from topic
@@ -519,6 +526,12 @@ def _execute_literature_collect(
     queries_data = _safe_json_loads(queries_text or "{}", {})
     queries: list[str] = queries_data.get("queries", [topic])
     year_min: int = queries_data.get("year_min", 2020)
+    try:  # ARC patch: literature queries (ARC_LIT_YEAR_MIN, ARC_LIT_QUERIES_FILE)
+        from researchclaw.pipeline.stage_impls._arc_knowledge import adjust_queries
+
+        queries, year_min = adjust_queries(queries, year_min)
+    except Exception:  # noqa: BLE001
+        pass
 
     # --- Try real API search first ---
     candidates: list[dict[str, Any]] = []
@@ -1122,6 +1135,12 @@ def _execute_knowledge_extract(
             parts.append(str(card.get(key, "")))
             parts.append("")
         (cards_dir / f"{card_id}.md").write_text("\n".join(parts), encoding="utf-8")
+    try:  # ARC patch: knowledge build (full-text implementation cards + official code)
+        from researchclaw.pipeline.stage_impls._arc_knowledge import build_knowledge
+
+        build_knowledge(run_dir, stage_dir, config, llm, _chat_with_prompt, logger)
+    except Exception as _k_exc:  # noqa: BLE001
+        logger.warning("Stage 6: implementation cards failed: %s", _k_exc)
     return StageResult(
         stage=Stage.KNOWLEDGE_EXTRACT,
         status=StageStatus.DONE,

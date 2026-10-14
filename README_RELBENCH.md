@@ -71,3 +71,33 @@ Se `smoke` o `baseline` falliscono, fermarsi e leggere l'errore: la pipeline non
 - **Ogni run va documentata** in `docs/runs/` (vedi `docs/runs/README.md`). `./run.sh relbench|sweep|baseline|smoke` scrivono un manifest in `docs/runs/_manifests/`;
   dopo una pipeline: `./run.sh report artifacts/rc-XXXX RUN-003` genera il rapporto automatico (tempi, tabelle, controllo dei numeri del paper).
 - Dopo aver estratto lo zip: `python3 rb_task/patches/apply_relbench_patches.py` (aggiunge le patch 0.3 a quelle già applicate), poi `./run.sh smoke`.
+
+## KIT 0.4 — memoria tra passate, descrizione fedele del metodo, run lunghe
+- La ricerca in modalità configurazioni ricorda tutte le valutazioni (anche delle passate precedenti) e riparte dalla migliore.
+- Alla fine di stage 13 viene scritto `rb_task/task_spec/METHOD_GROUND_TRUTH.md` (impostazioni realmente valutate, numeri di conferma, differenze appaiate): è aggiunto ai prompt di analisi e paper, perché non descrivano metodi mai implementati.
+- Run lunga (es. 24 h): in `config.arc.relbench.yaml` imposta `max_iterations: 150` e `max_refine_duration_sec: 86400`. Leggi prima `docs/runs/RUN-003_...md` §5: più valutazioni migliorano quasi certamente la validazione, non necessariamente il test.
+- Diagnostica del divario sweep/pipeline: `RB_SWEEP_THREADS=1 RB_SWEEP_MODE=arch RB_SWEEP_ONLY="__none__" RB_SWEEP_SEEDS=10 ./run.sh sweep` (solo la configurazione di riferimento, 10 semi, 1 thread) da confrontare con `baseline_tuned` di `RB_RECIPE=tuned ./run.sh baseline`.
+
+## KIT 0.5 — modalità codice con schede dai paper (default di `./run.sh relbench`)
+- Stage 6 scarica da arXiv i PDF dei paper più utili, li legge sezione per sezione e scrive una scheda di implementazione per paper (K1…K4), collegata al codice ufficiale clonato.
+- Le schede e le skill del progetto entrano nei prompt di ipotesi, piano e scrittura del codice; ogni tentativo deve citare la scheda in `PROPOSED_SOURCE` e cambiare davvero il modello di `proposed`.
+- I baseline usano `rb_model_official.py` (congelato); l'LLM modifica `rb_model.py` e può creare nuovi file.
+- Test breve: `ARC_DEADLINE_HOURS=3 ./run.sh relbench`. Run lunga: `ARC_DEADLINE_HOURS=24 ./run.sh relbench` (in tmux).
+- Ricerca a configurazioni (RUN-003): `ARC_SEARCH_MODE=config ./run.sh relbench`.
+- Dopo la run: `stage-06/impl_cards/` (schede), `stage-06/knowledge_meta.json` (paper letti), `stage-13/refinement_log.json` (`PROPOSED_SOURCE` e motivi di rifiuto per tentativo).
+
+## KIT 0.5.2 — codice ufficiale dei paper
+- Per ogni paper delle schede: link GitHub nel PDF, altrimenti ricerca GitHub tramite l'id arXiv; il repository viene clonato in `stage-06/paper_repos/`.
+- I moduli del modello diventano file `vendor_<repo>_<modulo>.py` del progetto (sola lettura) e la scheda ne elenca classi e firme: l'LLM li importa.
+- Richiede di ricostruire l'immagine una volta (`./run.sh build-relbench`: aggiunge `einops` e `h5py`, ultimo strato, pochi minuti).
+- Controllo dopo una run: `stage-06/knowledge_meta.json` (campi `repo`, `vendored`, `not_vendored`).
+
+## KIT 0.6.3 — correzioni dopo RUN-007 (stage 13 fallito con HTTP 400)
+- I prompt di riparazione dello stage 13 non contengono piu' il codice vendorizzato (in RUN-007: 192k caratteri, oltre il contesto di 65k token).
+- La riparazione automatica parte solo se la run e' davvero fallita (crash, nessuna metrica, NaN), non per i warning di torch_frame.
+- Un errore dell'LLM salta il tentativo invece di far fallire lo stage; il corpo degli errori HTTP 400 finisce nel log.
+- Vendoring: niente script da riga di comando (argparse) ne' copie di librerie installate (RelGNN: 8 moduli invece di 25).
+- La storia mostrata a Qwen include sempre gli ultimi tentativi (prima: solo le prime 20 voci).
+- GPU condivisa: `./run.sh relbench` si ferma subito se la GPU ha meno di `RB_PREFLIGHT_MIN_FREE_GB` (27,5) GB liberi
+  (`RB_SKIP_GPU_CHECK=1` per saltare il controllo); durante la run `main.py` aspetta fino a `RB_GPU_WAIT_SEC` (600 s) che ci
+  siano `RB_MIN_FREE_GB` (4,5) GB liberi, poi stampa `GPU_UNAVAILABLE` ed esce con codice 3 (nessuna "riparazione" del codice).

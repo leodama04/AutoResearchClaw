@@ -399,6 +399,7 @@ class LLMClient:
                         )
                     )
                     if not _transient_400:
+                        logger.warning("LLM HTTP 400 from %s: %s", model, body[:400])  # ARC patch: log 400 body
                         raise  # Genuine bad request — don't retry
 
                 # Retryable: 429 (rate limit), transient 400, 500, 502, 503, 504,

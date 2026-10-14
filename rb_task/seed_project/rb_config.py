@@ -38,6 +38,7 @@ TRAIN = {
 
 # Official RelBench baseline: 2-layer heterogeneous GraphSAGE, 128 channels.
 BASELINE = {
+    "model_impl": "official",  # frozen rb_model_official.py (never edited by the refinement)
     "gnn_type": "sage",
     "num_layers": 2,
     "channels": 128,
@@ -84,18 +85,22 @@ NODE_BUDGET_SCALE = float(os.environ.get("RB_NODE_BUDGET_SCALE", "1.0") or 1.0)
 # proposed configuration: an empty dict means `proposed` == `baseline_tuned`. Allowed keys/values: see
 # rb_task/task_spec/search_space.json (architecture only; the training recipe is fixed).
 PROPOSED_OVERRIDES = {}
+# Which implementation card (K1, K2, ... in the knowledge file) the current change comes from, e.g.
+# "K2: composite message passing over atomic routes". Required in code mode.
+PROPOSED_SOURCE = ""
 # ---- END REFINEMENT INTERFACE -----------------------------------------------------------------------
 
 BASELINE_TUNED = {**BASELINE, **TUNED_TRAIN}
 if RECIPE == "tuned":
-    PROPOSED = {**BASELINE_TUNED, **PROPOSED_OVERRIDES}  # empty overrides: starts identical to baseline_tuned
+    # editable implementation (rb_model.py); empty overrides: starts identical to baseline_tuned
+    PROPOSED = {**BASELINE_TUNED, "model_impl": "editable", **PROPOSED_OVERRIDES}
     CONDITIONS = {
         "baseline_graphsage": BASELINE,
         "baseline_tuned": BASELINE_TUNED,
         "proposed": PROPOSED,
     }
 else:
-    PROPOSED = {**PROPOSED, **PROPOSED_OVERRIDES}
+    PROPOSED = {**PROPOSED, "model_impl": "editable", **PROPOSED_OVERRIDES}
     CONDITIONS = {
         "baseline_graphsage": BASELINE,
         "proposed": PROPOSED,

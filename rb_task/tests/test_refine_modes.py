@@ -44,12 +44,31 @@ evil_cfg = CFG.replace("SEED_OFFSET = int", "SEED_OFFSET = 0  # hacked\nSEED_OFF
     "PROPOSED_OVERRIDES = {}", "PROPOSED_OVERRIDES = {'aggr': 'max', 'bogus': 3, 'channels': 100}")
 cand = {"main.py": "[rb_config content]", "rb_data.py": "DATA\n", "rb_config.py": evil_cfg,
         "rb_model.py": "MODEL v2\n", "extra.py": "x"}
+import os
+os.environ["ARC_SEARCH_MODE"] = "config"
 out, notes = A.guard_candidate(best, cand, SPACE, ["main.py", "rb_data.py"])
 assert out["main.py"] == "MAIN\n" and out["rb_data.py"] == "DATA\n"
 assert A.read_overrides(out["rb_config.py"], "PROPOSED_OVERRIDES") == {"aggr": "max"}   # bogus + channels=100 scartati
 assert "hacked" not in out["rb_config.py"] and out["rb_model.py"] == "MODEL v2\n"       # rb_model resta modificabile
 assert any("restored protected file main.py" in n for n in notes), notes
 print("OK 3: guard (main.py ripristinato, rb_config solo PROPOSED_OVERRIDES validato, rb_model libero in code mode)")
+# modalita' codice: chiavi nuove ammesse (componenti implementati dall'LLM), PROPOSED_SOURCE conservato, il resto ripristinato
+os.environ["ARC_SEARCH_MODE"] = "code"
+cand_c = dict(cand); cand_c["rb_config.py"] = evil_cfg.replace("PROPOSED_OVERRIDES = {'aggr': 'max', 'bogus': 3, 'channels': 100}",
+    "PROPOSED_OVERRIDES = {'gnn_type': 'relgnn', 'routes': 2}").replace('PROPOSED_SOURCE = ""', 'PROPOSED_SOURCE = "K1: atomic routes"')
+outc, _ = A.guard_candidate(best, cand_c, SPACE, ["main.py", "rb_data.py"])
+assert A.read_overrides(outc["rb_config.py"], "PROPOSED_OVERRIDES") == {"gnn_type": "relgnn", "routes": 2}
+assert "PROPOSED_SOURCE = 'K1: atomic routes'" in outc["rb_config.py"] and "hacked" not in outc["rb_config.py"]
+cand_l = dict(cand_c); cand_l["rb_config.py"] = cand_c["rb_config.py"].replace("'routes': 2}", "'routes': 2, 'lr': 0.001, 'batch_size': 512}")
+outl, notes_l = A.guard_candidate(best, cand_l, SPACE, ["main.py", "rb_data.py"])
+assert A.read_overrides(outl["rb_config.py"], "PROPOSED_OVERRIDES") == {"gnn_type": "relgnn", "routes": 2}, "lr/batch_size devono sparire"
+assert any("training-recipe keys" in n for n in notes_l)
+os.environ["ARC_SEARCH_MODE"] = "config"
+cand_v = dict(cand_c); cand_v["vendor_relgt_model.py"] = "# edited by the LLM"; cand_v["vendor_new.py"] = "x = 1"
+best_v = dict(best); best_v["vendor_relgt_model.py"] = "# official"
+outv, notes_v = A.guard_candidate(best_v, cand_v, SPACE, ["main.py"])
+assert outv["vendor_relgt_model.py"] == "# official" and "vendor_new.py" not in outv, "i file vendor_ sono di sola lettura"
+print("OK 3b: guard in modalita' codice (chiavi nuove ammesse, PROPOSED_SOURCE conservato, resto ripristinato)")
 
 # 4) gate
 def run(rc=0, m=None, to=False): return SimpleNamespace(returncode=rc, metrics=m, timed_out=to)
@@ -73,6 +92,8 @@ print("OK 5: margine di miglioramento")
 # 6) proposte: JSON valido, JSON con testo/think, invalido -> riprova -> fallback, duplicato
 class St:  # ModeState minimale
     space, expected, margin, topic = SPACE, {"seeds": 10, "se": 0.007}, 0.005, "T"
+    prev_logs = []
+    config_mode, mode = True, "config"
 best_files = {"rb_config.py": CFG}
 log = {"iterations": [{"arc_overrides": {"aggr": "max"}, "metric": 0.85, "improved": True}]}
 def chat_ret(*texts):
@@ -102,4 +123,78 @@ print("OK 7: prompt di proposta senza riferimenti al test")
 f = A.make_confirm_files({"rb_config.py": CFG}, 100)
 assert "SEED_OFFSET = 100" in f["rb_config.py"] and A.make_confirm_files({"rb_config.py": "x=1"}, 100) is None
 print("OK 8: file di conferma con SEED_OFFSET=100")
+
+# 9) memoria tra passate e partenza dal migliore (funzioni pure)
+prev = [{"generated": "1", "iterations": [
+            {"iteration": 1, "metric": 0.80, "arc_overrides": {"aggr": "max"}, "sandbox": {"metrics": {"m": 1}}},
+            {"iteration": 2, "metric": 0.70, "arc_overrides": {"gnn_type": "gin"}},
+            {"iteration": 3, "metric": 0.95, "arc_overrides": {"aggr": "mean"}, "arc_rejected": "exit code 1"}]}]
+class St2(St): prev_logs = prev
+rows = A._evaluated({"iterations": [{"arc_overrides": {"dropout": 0.1}, "metric": 0.75}]}, prev)
+assert [A.canon(r[0]) for r in rows] == [A.canon(x) for x in ({}, {"aggr": "max"}, {"gnn_type": "gin"}, {"aggr": "mean"}, {"dropout": 0.1})]
+ws = A.warm_start(St2, {"rb_config.py": CFG}, 0.78, "maximize")
+assert ws and ws["overrides"] == {"aggr": "max"} and ws["metric"] == 0.80                    # il run rifiutato (0.95) NON diventa il migliore
+assert ws["record"]["iteration"] == 0 and ws["record"]["arc_carried_from"] and A.read_overrides(ws["files"]["rb_config.py"], "PROPOSED_OVERRIDES") == {"aggr": "max"}
+assert A.warm_start(St2, {"rb_config.py": CFG}, 0.90, "maximize") is None                    # il corrente e' migliore: nessuna partenza
+assert A.warm_start(St2, {"rb_config.py": CFG}, 0.80, "maximize") is not None                # pari (metrica recuperata da upstream): si'
+assert [r for r in A._evaluated({"iterations": [ws["record"]]}, [])] == [({}, None, "initial")]   # i record riportati non si contano due volte
+print("OK 9: memoria tra passate e partenza dal migliore")
+
+# 10) statistiche appaiate
+res = [{"condition": c, "seed": s, "val": v + 0.1 * (c == "proposed"), "test": v} for c in ("proposed", "baseline_tuned") for s, v in enumerate([0.70, 0.72, 0.71, 0.69, 0.73, 0.70])]
+st = A.paired_stats(res, "proposed", "baseline_tuned", "val")
+assert st["n"] == 6 and abs(st["mean_diff"] - 0.1) < 1e-9 and st["seeds_better"] == 6 and st["ci95"][0] > 0.09
+assert abs(A.paired_stats(res, "proposed", "baseline_tuned", "test")["mean_diff"]) < 1e-12 and A.paired_stats(res, "proposed", "nonexistent", "val") is None
+print("OK 10: statistiche appaiate (media, IC, semi migliori, test di permutazione)")
+# 11) l'errore vero arriva all'LLM anche se lo stderr e' pieno di warning
+rec = {"sandbox": {"stderr": "x.py:1: UserWarning: Weights only load failed\n  warnings.warn(\n" * 30 +
+                   "Traceback (most recent call last):\n  File \"/a/experiment_v3/rb_model.py\", line 99, in __init__\n"
+                   "ValueError: 'add_self_loops' attribute set to 'True' on module GATv2Conv"}}
+ex = A.error_excerpt(rec)
+assert "add_self_loops" in ex and "Weights only" not in ex, ex
+print("OK 11: estratto dell'errore senza i warning")
+
+# 12) ripartenza in modalita' codice: tutti i file della versione migliore della passata precedente
+import tempfile
+from pathlib import Path as _P
+d = _P(tempfile.mkdtemp()); (d / "stage-13_v1" / "experiment_v2").mkdir(parents=True)
+(d / "stage-13_v1" / "experiment_v2" / "rb_model.py").write_text("# best model\n")
+(d / "stage-13_v1" / "experiment_v2" / "rb_config.py").write_text(CFG)
+(d / "stage-13_v1" / "refinement_log.json").write_text(json.dumps({"generated": "1", "iterations": [
+    {"iteration": 1, "metric": 0.75, "version_dir": "experiment_v1/"},
+    {"iteration": 2, "metric": 0.82, "version_dir": "experiment_v2/"}]}))
+class St3(St):
+    prev_logs = A.previous_passes(d); config_mode = False; mode = "code"
+ws = A.warm_start(St3, {"rb_config.py": CFG, "rb_model.py": "# seed\n"}, 0.78, "maximize")
+assert ws and ws["metric"] == 0.82 and ws["files"]["rb_model.py"] == "# best model\n", ws and ws["files"].keys()
+print("OK 12: ripartenza in modalita' codice dai file della versione migliore")
+# 13) riparazione: un blocco di codice senza nome va nel file giusto (non in main.py)
+files = {"main.py": "import rb_config\nprint(1)\n", "rb_model.py": "def build_model(d, c, cfg, o):\n    pass\n", "rb_config.py": CFG}
+assert A.target_for_block("import torch\ndef build_model(data, col_stats_dict, cfg, out_channels):\n    return 1\n", files) == "rb_model.py"
+assert A.target_for_block("PROPOSED_OVERRIDES = {}\n", files) == "rb_config.py"
+assert A.target_for_block("import rb_config\nprint(2)\n", files) == "main.py"
+print("OK 13: blocco di riparazione senza nome assegnato al file giusto")
+
+# 14) candidato identico alla versione migliore -> rifiutato (rieseguire lo stesso codice misura solo rumore)
+os.environ["ARC_SEARCH_MODE"] = "code"
+same, _ = A.guard_candidate(best, dict(best), SPACE, ["main.py"])
+class StC(St):
+    mode = "code"; config_mode = False
+ok, why = A.knowledge_gate(type("R", (), {"metrics": {}})(), same, StC)
+assert not ok and "nothing changed" in why, why
+diff_c = dict(best); diff_c["rb_model.py"] = "MODEL v3\n"
+A.guard_candidate(best, diff_c, SPACE, ["main.py"])
+assert not A.LAST_GUARD["unchanged"]
+os.environ["ARC_SEARCH_MODE"] = "config"
+assert A.no_gain_value(0.8, "maximize") < 0.8 and A.no_gain_value(0.8, "minimize") > 0.8
+print("OK 14: candidato identico al migliore rifiutato; valore 'senza guadagno' coerente con la direzione")
+# 15) codice ufficiale importato, tentativi saltati senza attivare la riparazione
+assert A.official_imports({"rb_model.py": "import torch\nfrom vendor_relgt_model import RelGTLayer\nimport vendor_relgt_encoders as E\n",
+                           "vendor_relgt_model.py": "from vendor_relgt_local_module import LocalModule\n"}) == ["vendor_relgt_encoders", "vendor_relgt_model"]
+A.LAST_GUARD["unchanged"] = True
+assert A.skip_run()
+st = A.skipped_run().stderr
+assert not [kw for kw in ("Warning", "Error", "Traceback", "Exception", "divide", "overflow", "invalid value", "NaN", "inf") if kw in st]
+A.LAST_GUARD["unchanged"] = False
+print("OK 15: import del codice ufficiale rilevati; i tentativi identici vengono saltati senza far scattare la riparazione")
 print("REFINE MODES TESTS PASSED")

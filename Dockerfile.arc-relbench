@@ -114,6 +114,10 @@ WORKDIR /app
 COPY . /app
 RUN pip install -e ".[all]"
 
+# Small dependencies of official paper repositories (e.g. RelGT's model.py needs einops), so that their code can be
+# imported as-is by the code the LLM writes. Last layer: rebuilding only re-runs this step.
+RUN pip install --no-cache-dir einops h5py
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

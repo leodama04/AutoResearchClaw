@@ -548,8 +548,14 @@ def _execute_code_generation(
     if _arc_seed_dir and Path(_arc_seed_dir).is_dir():
         _arc_seed_files = {
             _p.name: _p.read_text(encoding="utf-8")
-            for _p in sorted(Path(_arc_seed_dir).glob("*.py"))
+            for _p in sorted(list(Path(_arc_seed_dir).glob("*.py"))  # ARC patch: vendored code
+                             + list((run_dir / "stage-06" / "vendor").glob("vendor_*.py")))
         }
+        for _pair in [x for x in _arc_os.environ.get("ARC_SEED_FILE_MAP", "").split(",") if "=" in x]:  # ARC patch: seed file map
+            _dst, _src = (_s.strip() for _s in _pair.split("=", 1))
+            if _src in _arc_seed_files:
+                _arc_seed_files[_dst] = _arc_seed_files.pop(_src)
+        _arc_seed_files.pop("rb_model_minimal.py", None)
         if "main.py" in _arc_seed_files:
             files = dict(_arc_seed_files)
             _arc_seeded = True

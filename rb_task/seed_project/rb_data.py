@@ -6,12 +6,16 @@ the test table is only used to report the final number.
 """
 
 import json
+import warnings
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
 import torch
+
+# torch_frame prints this warning for every cached table; it filled the logs and hid the real errors
+warnings.filterwarnings("ignore", message=".*Weights only load failed.*")
 from torch_frame import stype
 from torch_frame.config.text_embedder import TextEmbedderConfig
 from torch_geometric.data import HeteroData

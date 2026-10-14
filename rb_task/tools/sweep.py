@@ -10,6 +10,7 @@ Run:  ./run.sh sweep                       training-recipe / size / operator var
       RB_SWEEP_MODE=arch ./run.sh sweep    architecture variants under the fixed tuned recipe
       confirm the winners on NEW seeds:
         RB_SWEEP_MODE=arch RB_SWEEP_ONLY="aggr=max,transformer" RB_SWEEP_SEEDS=10 RB_SWEEP_SEED_OFFSET=100 ./run.sh sweep
+      A/B on the measurement path (sweep vs main.py give different numbers for the same config): RB_SWEEP_THREADS=1
       env: RB_SWEEP_SEEDS=5, RB_SWEEP_DEEP=1 (adds 3-layer models), RB_SWEEP_RECIPE_JSON='{"batch_size":128}'
 """
 import json
@@ -177,11 +178,20 @@ def main():
     offset = int(os.environ.get("RB_SWEEP_SEED_OFFSET", "0"))
     seeds = list(range(offset, offset + int(os.environ.get("RB_SWEEP_SEEDS", "5"))))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    threads = os.environ.get("RB_SWEEP_THREADS", "").strip()
+    if threads:  # main.py calls torch.set_num_threads(1) on GPU; the sweep did not -> A/B diagnostic
+        torch.set_num_threads(int(threads))
+    print(f"torch threads: {torch.get_num_threads()}")
     ctx = rb_data.prepare_data(C.DATASET, C.TASK, C.CACHE_DIR, device)
     ref = rb_data.reference_nodes(ctx, C.BASELINE)
     mode = os.environ.get("RB_SWEEP_MODE", "recipe")
     recipe = json.loads(os.environ["RB_SWEEP_RECIPE_JSON"]) if os.environ.get("RB_SWEEP_RECIPE_JSON") else None
     cfgs = sweep_configs(deep=os.environ.get("RB_SWEEP_DEEP", "0") == "1", mode=mode, recipe=recipe)
+    custom = os.environ.get("RB_SWEEP_CONFIGS_JSON", "").strip()
+    if custom:  # {"name": {overrides}, ...}; the first entry is the reference; recipe = tuned unless overridden
+        spec = json.loads(Path(custom).read_text(encoding="utf-8"))
+        cfgs = {name: {**C.BASELINE, **C.TUNED_TRAIN, **over} for name, over in spec.items() if not name.startswith("_")}
+        mode = "custom"
     only = [x.strip().lower() for x in os.environ.get("RB_SWEEP_ONLY", "").split(",") if x.strip()]
     if only:  # keep the reference (first) configuration + those whose name contains one of the strings
         ref_name = next(iter(cfgs))

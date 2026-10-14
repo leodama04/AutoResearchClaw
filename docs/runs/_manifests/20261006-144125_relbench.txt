@@ -1,0 +1,9 @@
+date: 2026-10-06T14:41:25+00:00
+command: ./run.sh relbench relbench
+kit: relbench-kit 0.5.2 (2026-10-06): official code of the papers found (PDF links, arXiv-id GitHub search), vendored as importable read-only modules; plus 0.5.1 fixes
+git: e96ba39 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
+  ARC_DEADLINE_HOURS=3
+  ARC_RUN_STARTED_AT=1791297685

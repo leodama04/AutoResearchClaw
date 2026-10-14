@@ -1,0 +1,34 @@
+{
+  "_doc": "RUN-004 ablation: which part of the winning change matters? Reference = official GNN with the tuned recipe (batch 128).",
+  "baseline_tuned": {},
+  "run004_best (gatv2+residual+dropout0.2+layernorm head+lr1e-3)": {
+    "gnn_type": "gatv2",
+    "residual": true,
+    "dropout": 0.2,
+    "norm": "layer_norm",
+    "lr": 0.001
+  },
+  "same, lr 5e-3 (recipe unchanged)": {
+    "gnn_type": "gatv2",
+    "residual": true,
+    "dropout": 0.2,
+    "norm": "layer_norm"
+  },
+  "only lr 1e-3 (official sage)": {
+    "lr": 0.001
+  },
+  "gatv2 + lr 1e-3": {
+    "gnn_type": "gatv2",
+    "lr": 0.001
+  },
+  "best without residual": {
+    "gnn_type": "gatv2",
+    "dropout": 0.2,
+    "norm": "layer_norm",
+    "lr": 0.001
+  },
+  "aggr=max (RUN-003 winner) + lr 1e-3": {
+    "aggr": "max",
+    "lr": 0.001
+  }
+}

@@ -1,1 +1,1 @@
-relbench-kit 0.3.1 (2026-10-04): config search mode, validity gate, file guard, filename-preservation fix, run documentation; manifest fix
+relbench-kit 0.6.3 (2026-10-11): fixes after RUN-007 (stage-13 HTTP 400: repair prompts without vendored code, repair only real failures, LLM errors skip the attempt, cleaner vendoring, recent history, busy-GPU handling); plus 0.6.2

@@ -145,5 +145,17 @@
         "sage"
       ]
     }
-  }
+  },
+  "locked_keys": [
+    "lr",
+    "epochs",
+    "batch_size",
+    "weight_decay",
+    "num_neighbors",
+    "temporal_strategy",
+    "max_fanout_product",
+    "max_steps_per_epoch",
+    "num_workers",
+    "model_impl"
+  ]
 }

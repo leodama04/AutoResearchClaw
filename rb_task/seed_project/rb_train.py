@@ -20,7 +20,13 @@ from torch_geometric.seed import seed_everything
 from relbench.base import TaskType
 
 import rb_config as C
-from rb_model import build_model
+import rb_model
+import rb_model_official
+
+
+def builder_for(cfg: dict):
+    """Baselines always use the frozen official model; `proposed` uses the editable rb_model.py."""
+    return rb_model_official.build_model if cfg.get("model_impl") == "official" else rb_model.build_model
 
 
 def task_setup(task, train_table) -> SimpleNamespace:
@@ -103,7 +109,7 @@ def run_one(ctx, loaders: Dict, cfg: dict, seed: int, device, harness) -> dict:
     if on_cuda:
         torch.cuda.reset_peak_memory_stats()
 
-    model = build_model(
+    model = builder_for(cfg)(
         ctx.data, ctx.col_stats_dict, cfg, out_channels=setup.out_channels
     ).to(device)
     optimizer = torch.optim.Adam(

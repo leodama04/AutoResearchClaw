@@ -116,8 +116,8 @@ def _error_text(result: Any) -> str:
 
 
 def _read_sources(work: Path) -> str:
-    files = sorted(
-        (p for p in work.rglob("*.py") if "__pycache__" not in p.parts),
+    files = sorted(  # vendored official code (read-only, possibly 100k+ characters) is not shown
+        (p for p in work.rglob("*.py") if "__pycache__" not in p.parts and not p.name.startswith("vendor_")),
         key=lambda p: (p.name != "main.py", p.name),
     )
     parts, used = [], 0
@@ -234,6 +234,11 @@ def repair_loop(
             break
         if getattr(result, "timed_out", False):
             log.append({"attempt": attempt, "note": "timeout senza metriche: nessuna riparazione"})
+            break
+        if "GPU_UNAVAILABLE" in (getattr(result, "stdout", "") or ""):
+            # the GPU was full (other processes): an environment problem, not a bug - do not let the LLM edit the code
+            logger.warning("Stage 12: GPU occupied by other processes - no code repair (see GPU_UNAVAILABLE in stdout)")
+            log.append({"attempt": attempt, "note": "GPU_UNAVAILABLE: GPU occupata da altri processi, nessuna riparazione"})
             break
         err = _error_text(result)
         prompt = _build_prompt(work, err, Path(stage_dir), int(timeout_sec))

@@ -19,7 +19,7 @@ TASK = HERE.parent
 os.environ.update({
     "RB_RECIPE": "tuned", "ARC_SEARCH_MODE": "config", "ARC_SEARCH_SPACE_FILE": str(TASK / "task_spec" / "search_space.json"),
     "ARC_PROTECTED_FILES": "main.py,rb_data.py,rb_loader.py,rb_text.py,rb_train.py", "ARC_MIN_IMPROVEMENT": "0.005",
-    "ARC_CONFIRM_SEED_OFFSET": "100", "ARC_HIDE_TEST_METRICS": "1", "ARC_KEEP_SEEDS": "1", "ARC_REFINE_PATIENCE": "5", "ARC_PRESERVE_FILENAMES": "1",
+    "ARC_CONFIRM_SEED_OFFSET": "100", "ARC_METHOD_FILE": str(Path(tempfile.mkdtemp()) / "METHOD.md"), "ARC_HIDE_TEST_METRICS": "1", "ARC_KEEP_SEEDS": "1", "ARC_REFINE_PATIENCE": "5", "ARC_PRESERVE_FILENAMES": "1",
 })
 
 from researchclaw.adapters import AdapterBundle
@@ -52,6 +52,8 @@ def val_of(cfg, seed):
 h = experiment_harness.get_harness(time_budget=60)
 for name, cfg in C.CONDITIONS.items():
     vals = [val_of(cfg, s) for s in C.SEEDS]
+    for s_, v_ in zip(C.SEEDS, vals):
+        h.log_result({"condition": name, "seed": s_, "val": float(v_), "test": float(v_) * 0.9})
     h.report_metric(f"{name}_val_roc_auc_mean", float(np.mean(vals)))
     h.report_metric(f"{name}_val_roc_auc_std", float(np.std(vals, ddof=1)))
     h.report_metric(f"{name}_test_roc_auc_mean", float(np.mean(vals)) * 0.9)
@@ -92,7 +94,8 @@ answers = iter([
 prompts = []
 sys.path.insert(0, str(TASK / "patches"))
 import researchclaw.pipeline.stage_impls._arc_refine as _pkg_arc
-_pkg_arc._fallback = lambda space_cfg, best, seen, iteration: {"enc_layers": 2}   # deterministic, harmless for the toy
+_orig_fallback = _pkg_arc._fallback
+_pkg_arc._fallback = lambda space_cfg, best, seen, iteration: {"enc_layers": 2}   # deterministic, harmless for the toy (pass 1 only)
 class LLM:
     def chat(self, messages, **kw):
         prompts.append(messages[-1]["content"]); return Resp(next(answers))
@@ -135,4 +138,56 @@ blob = "\n".join(prompts)
 assert "test_roc_auc" not in blob and "0.63" not in blob and "0.9" not in blob.replace("0.95", ""), "numeri di test nel prompt!"
 assert "REJECTED" in blob or "FAILED" in blob                               # l'LLM vede il tentativo fallito
 print("OK 4: nessun numero di test nei prompt dell'LLM; i fallimenti sono nella storia")
+# ---- 2nd pass: the pipeline archives pass 1 as stage-13_v1 and runs stage 13 again
+import shutil
+shutil.move(str(stage_dir), str(run_dir / "stage-13_v1"))
+stage2 = run_dir / "stage-13"; stage2.mkdir()
+answers2 = iter([
+    '{"overrides": {"aggr": "max", "channels": 64}}',                    # already evaluated in pass 1 -> must be refused
+    '{"overrides": {"aggr": "max", "channels": 64}}',                    # ... again -> fallback
+    '{"overrides": {"aggr": "max", "channels": 64, "norm": "layer_norm"}, "rationale": "norm"}',   # worse than best (toy ignores norm) -> no gain
+])
+prompts2 = []
+class LLM2:
+    def chat(self, messages, **kw):
+        prompts2.append(messages[-1]["content"]); return Resp(next(answers2))
+os.environ["ARC_PRESERVE_FILENAMES"] = "1"
+_pkg_arc._fallback = _orig_fallback            # pass 2 uses the REAL fallback: it must avoid everything already evaluated
+cfg2 = dataclasses.replace(cfg, experiment=dataclasses.replace(cfg.experiment, max_iterations=2))
+res2 = _execute_iterative_refine(stage2, run_dir, cfg2, AdapterBundle(), llm=LLM2(), prompts=PromptManager())
+log2 = json.loads((stage2 / "refinement_log.json").read_text())
+first = log2["iterations"][0]
+assert first["iteration"] == 0 and first["arc_overrides"] == {"aggr": "max", "channels": 64} and first.get("arc_carried_from"), first
+assert log2["best_version"] == "experiment_v0/" and abs(log2["best_metric"] - 0.852) < 0.01, (log2["best_version"], log2["best_metric"])
+assert A.read_overrides((stage2 / "experiment_final" / "rb_config.py").read_text(), "PROPOSED_OVERRIDES") == {"aggr": "max", "channels": 64}
+joined = "\n".join(prompts2)
+assert "#1:" in prompts2[0] and '"aggr": "max"' in prompts2[0], "la storia della passata 1 non e' nel prompt"
+assert sum(1 for it in log2["iterations"][1:] if it.get("arc_source") == "llm") <= 1                      # il duplicato non e' stato accettato
+assert all(canon_ not in [A.canon(i2.get("arc_overrides") or {}) for i2 in json.loads((run_dir / "stage-13_v1" / "refinement_log.json").read_text())["iterations"]]
+           for canon_ in [A.canon(it["arc_overrides"]) for it in log2["iterations"][1:] if it.get("arc_overrides") is not None])
+print("OK 5: seconda passata: storia condivisa, partenza dal migliore (iterazione 0 riportata), nessuna configurazione ripetuta")
+
+# ---- method ground-truth file + paired stats
+mt = A.method_text()
+assert "GROUND TRUTH" in mt and "`aggr` = 'max'" in mt and "`channels` = 64" in mt, mt[:400]
+assert "paired test difference proposed - baseline_tuned" in mt and "paired validation difference proposed - baseline_tuned" in mt
+assert "projection" in mt                                                                                     # la regola 'non inventare' e' presente
+conf2 = json.loads((stage_dir.parent / "stage-13_v1" / "confirmation.json").read_text())
+assert conf2["paired"]["proposed-baseline_tuned:val"]["n"] == 10
+print("OK 6: file del metodo (impostazioni reali, numeri di conferma, differenze appaiate)")
+# il file del metodo arriva ai prompt di analisi e paper, ma NON a quelli di raffinamento
+pm = PromptManager()
+pa = pm.for_stage("paper_draft", topic="T", outline="O", hypotheses="H", analysis="A", results="R", literature="L").user if False else None
+for st_ in ("paper_draft", "result_analysis", "peer_review"):
+    kw = {k: "x" for k in ("topic", "outline", "hypotheses", "analysis", "results", "literature", "draft", "experiment_summary",
+                           "paper", "reviews", "synthesis", "metric_key", "metric_direction", "experiment_results", "context", "figures")}
+    try:
+        txt = pm.for_stage(st_, **kw).user
+    except Exception:
+        txt = ""
+    assert "GROUND TRUTH ABOUT THE EVALUATED METHOD" in txt, st_
+for sub in ("iterative_improve",):
+    assert "GROUND TRUTH" not in pm.sub_prompt(sub, metric_key="m", metric_direction="maximize", files_context="", run_summaries="",
+                                                condition_coverage_hint="", topic="t", exp_plan_anchor="").user
+print("OK 7: il file del metodo e' iniettato nei prompt di analisi/paper e non in quelli di raffinamento")
 print("STAGE13 CONFIG MODE TEST PASSED")

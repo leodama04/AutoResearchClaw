@@ -64,7 +64,7 @@ mai `proposed`. L'LLM aveva cambiato il formato di stampa per seme in `condition
 (seme 0) come `primary_metric` (0,7815 e 0,7862) e la pipeline lo ha accettato come nuovo massimo. `experiment_final` (v5) è il codice di una di queste esecuzioni
 in errore. Non conosco la causa dell'errore di quelle esecuzioni (lo stderr dopo la riparazione non è stato salvato).
 
-### 3.4 L'unica altra valutazione completa del codice finale
+### 3.4 L'unica valutazione completa di una variante architetturale (iterazione 7; NON è il codice finale, vedi Errata)
 Iterazione 7 (3 semi, perché l'LLM aveva riscritto `SEEDS = [0, 1, 2]`): **due esecuzioni dello stesso codice** hanno dato risultati molto diversi.
 
 | esecuzione | proposed val | proposed test | baseline_tuned val / test | vanilla val |
@@ -109,3 +109,17 @@ In entrambe la validazione è sopra `baseline_tuned` (+0,028 e +0,024) e il **te
 ## 7. File di riferimento
 - Cartella della run: `artifacts/rc-20261004-162625-9b9601/` (zip: `primo_esperimento_relbench_f1_driver_top3.zip`)
 - `stage-12/runs/run-1.json`, `stage-13*/refinement_log.json`, `stage-14/experiment_summary.json`, `stage-20/quality_report.json`, `stage-22/paper.pdf`, `stage-23/paper_final_verified.md`
+
+### Errata 2 (2026-10-05, dopo una nuova lettura dei file della run)
+- **§3.4 attribuiva i numeri dell'iterazione 7 al codice finale: è sbagliato.** L'iterazione 7 valuta una variante ResGated + GraphNorm + dropout 0,25 + fusione degli strati (`fuse="add"`), 3 semi.
+  Il codice finale dichiarato (`experiment_final` = iterazione 5: GATv2 con 8 teste e self-loop, GraphNorm, residual, dropout 0,1, aggregazione "add") **non è mai stato valutato per intero**: la sua esecuzione è terminata con errore.
+- **Le 5 valutazioni complete con 10 semi non hanno valutato nessuna architettura nuova.** In tutte l'LLM ha aggiunto a `rb_model.py` delle *opzioni* (GraphNorm, self-loop per GATv2) senza attivarle in `rb_config.py`: il modello `proposed` era identico a `baseline_tuned`, e infatti i numeri coincidono entro il rumore (val 0,774–0,777 contro 0,774–0,778).
+- **Passi di ottimizzazione:** 17 iterazioni in 3 passate (6 + 3 + 8): 5 complete a 10 semi (modello identico al baseline), 1 completa a 3 semi (iterazione 7), 11 terminate con errore o senza metriche.
+- **Letteratura:** 7 query ottenute spezzando il titolo del topic in gruppi di parole; 248 articoli (194 OpenAlex, 52 arXiv, 2 "seminali"), 15 selezionati tra cui RelBench, **RelGNN**, QUARTET, MetaSieve, "What Makes a Desired Graph for RDL?", insieme ad articoli fuori tema (affinità farmaco–bersaglio, neuroscienze, riassunto di codice).
+  È stato clonato **un solo repository: quello ufficiale di RelGNN** (`snap-stanford/RelGNN`), cioè il metodo che in classifica fa 85,7 su questo task. Non è stato usato: (1) l'estratto di codice ha preso 3 file di utilità di RelBench perché il mio helper `_repo_context.py` saltava la cartella `examples/`, dove stanno `relgnn_conv.py` e `relgnn_model.py` (corretto: ora sceglie proprio quei file); (2) gli estratti entrano solo nello stage 10, che con il codice di partenza fisso viene saltato; lo stage 13 non li vede.
+  Le ipotesi dello stage 8 (HATG, AFP-TJ, DPRF) non citano RelGNN; GATv2 e GraphNorm non compaiono nelle schede della letteratura. Lo stage 3 elenca anche "fonti" scritte dall'LLM con titoli e link sbagliati (es. RelBench con un identificativo arXiv errato); la raccolta vera (stage 4) usa invece le API di OpenAlex e arXiv.
+- **Ricerca web (stage 4), aggiunta 2026-10-05:** 20 risultati, tutti con `score` 0.0, nessuna pagina scaricata, nessun PDF, nessun risultato da Google Scholar. Cause lette nel codice (`researchclaw/web/`):
+  lo `score` è il punteggio di pertinenza restituito solo da Tavily; senza chiave Tavily (config: `TAVILY_API_KEY_UNSET`) si usa lo scraping di DuckDuckGo, che non calcola punteggi (0.0 = non calcolato, non "irrilevante"), e lo score non decide comunque cosa scaricare.
+  Il crawling dei primi 5 URL usa crawl4ai, che richiede un browser Playwright non installato nell'immagine (stesso errore visto nelle run MNIST; il log di questa run non l'ho visto). I PDF vengono scaricati solo se l'URL finisce con `.pdf`: nessuno dei 20 (arXiv e OpenReview usano `/pdf/<id>` e `pdf?id=`).
+  Google Scholar via `scholarly` di solito viene bloccato senza proxy (non verificato). I risultati erano comunque in gran parte fuori tema (la query "architecture and feature-encoding modifications of the" ha trovato articoli sul patrimonio architettonico; il primo risultato è una pubblicità).
+  La web search fornisce solo testo di contesto (`web_context.md`); i paper veri arrivano dalle API di OpenAlex e arXiv (248, con titolo e abstract) e le schede dello stage 6 sono scritte sugli abstract, non sul testo completo.

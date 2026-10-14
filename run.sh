@@ -16,7 +16,8 @@
 #     RB_SWEEP_MODE=arch RB_SWEEP_ONLY="aggr=max,transformer" RB_SWEEP_SEEDS=10 RB_SWEEP_SEED_OFFSET=100 ./run.sh sweep
 #                                         (conferma dei vincitori su semi NUOVI; RB_SHOW_WARNINGS=1 per vedere i warning)
 #     ./run.sh report artifacts/rc-XXXX [NOME]   (rapporto automatico di una run in docs/runs/)
-#     ./run.sh relbench ["<topic>"]       (pipeline completa fino al paper; RB_RECIPE=official per la ricetta originale; ARC_SEARCH_MODE=code per far riscrivere il codice all'LLM)
+#     ARC_DEADLINE_HOURS=24 ./run.sh relbench   (pipeline completa, MODALITA' CODICE con schede dai paper; ARC_SEARCH_MODE=config per la ricerca a configurazioni)
+#                                         (si ferma subito se la GPU ha meno di RB_PREFLIGHT_MIN_FREE_GB=27.5 GB liberi; RB_SKIP_GPU_CHECK=1 per saltare)
 set -euo pipefail
 
 ARC_DIR="${ARC_DIR:-/home/damario/AutoResearchClaw}"
@@ -60,6 +61,25 @@ write_manifest() {
     ) || true
 }
 
+# Prima di una run lunga: la GPU e' condivisa con altri utenti. Servono ~23 GB per Qwen (LLAMA_CTX=65536) + ~4.5 GB
+# per gli esperimenti; in RUN-007 la GPU era piena e ogni esperimento finiva in "CUDA error: out of memory".
+gpu_preflight() {
+    [ "${RB_SKIP_GPU_CHECK:-0}" = "1" ] && return 0
+    command -v nvidia-smi >/dev/null 2>&1 || return 0
+    local need_gb="${RB_PREFLIGHT_MIN_FREE_GB:-27.5}" free_mb
+    free_mb="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sort -n | tail -1)" || return 0
+    [ -n "$free_mb" ] || return 0
+    if awk -v f="$free_mb" -v n="$need_gb" 'BEGIN{exit !(f < n*1024)}'; then
+        echo "STOP: sulla GPU ci sono solo $((free_mb / 1024)) GB liberi; ne servono ~${need_gb} (Qwen ~23 GB + esperimenti ~4.5 GB)." >&2
+        echo "Processi sulla GPU (quelli che non sono tuoi sono di altri utenti: non terminarli):" >&2
+        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+        echo "Aspetta che si liberi, oppure riduci Qwen (LLAMA_EXTRA_ARGS=\"--n-cpu-moe 8\" e RB_PREFLIGHT_MIN_FREE_GB piu' basso)." >&2
+        echo "Per saltare il controllo: RB_SKIP_GPU_CHECK=1" >&2
+        exit 2
+    fi
+    echo "[gpu] $((free_mb / 1024)) GB liberi: ok" >&2
+}
+
 docker_run() {
     # shellcheck disable=SC2086
     docker run --rm $TTY_FLAGS --init --gpus all \
@@ -72,7 +92,8 @@ docker_run() {
         -e LLAMA_LOG_FILE=/app/llama-server.log \
         -e LLAMA_EXTRA_ARGS -e LLAMA_CTX -e LLAMA_NGL -e LLAMA_ENABLE_THINKING \
         -e ARC_MAX_TOKENS_MULT -e ARC_MAX_TOKENS_CAP -e ARC_STAGE12_REPAIRS \
-        -e RB_DATASET -e RB_TASK -e RB_TIME_BUDGET_SEC -e RB_GPU_MEM_BUDGET_GB -e RB_NODE_BUDGET_SCALE -e RB_RECIPE -e RB_SWEEP_MODE -e RB_SWEEP_SEEDS -e RB_SWEEP_DEEP -e RB_SWEEP_RECIPE_JSON -e RB_SWEEP_ONLY -e RB_SWEEP_SEED_OFFSET -e RB_SHOW_WARNINGS \
+        -e RB_MIN_FREE_GB -e RB_GPU_WAIT_SEC \
+        -e RB_DATASET -e RB_TASK -e RB_TIME_BUDGET_SEC -e RB_GPU_MEM_BUDGET_GB -e RB_NODE_BUDGET_SCALE -e RB_RECIPE -e RB_SWEEP_MODE -e RB_SWEEP_SEEDS -e RB_SWEEP_DEEP -e RB_SWEEP_RECIPE_JSON -e RB_SWEEP_ONLY -e RB_SWEEP_SEED_OFFSET -e RB_SHOW_WARNINGS -e RB_SWEEP_THREADS -e RB_SWEEP_CONFIGS_JSON \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         -e S2_API_KEY -e GITHUB_TOKEN -e OPENALEX_API_KEY -e TAVILY_API_KEY_UNSET \
         ${EXTRA_DOCKER_ARGS[@]+"${EXTRA_DOCKER_ARGS[@]}"} \
@@ -111,7 +132,7 @@ case "${1:-}" in
         write_manifest smoke
         IMAGE="$RB_IMAGE"
         EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
-        docker_run bash -c 'cd /app && python3 rb_task/tests/test_loader.py && python3 rb_task/tests/test_fanouts.py && python3 rb_task/tests/test_microbatch.py && python3 rb_task/tests/test_sweep.py && python3 rb_task/tests/test_refine_modes.py && python3 rb_task/tests/test_stage13_config_mode.py && python3 rb_task/tests/smoke_fake.py && python3 rb_task/tests/smoke_main_fake.py && RB_RECIPE=tuned python3 rb_task/tests/smoke_main_fake.py'
+        docker_run bash -c 'cd /app && python3 rb_task/tests/test_loader.py && python3 rb_task/tests/test_fanouts.py && python3 rb_task/tests/test_microbatch.py && python3 rb_task/tests/test_sweep.py && python3 rb_task/tests/test_refine_modes.py && python3 rb_task/tests/test_knowledge.py && python3 rb_task/tests/test_tokens.py && python3 rb_task/tests/test_minimal_model.py && python3 rb_task/tests/test_stage13_config_mode.py && python3 rb_task/tests/test_stage13_code_mode.py && python3 rb_task/tests/smoke_fake.py && python3 rb_task/tests/smoke_main_fake.py && RB_RECIPE=tuned python3 rb_task/tests/smoke_main_fake.py'
         ;;
     baseline)
         write_manifest baseline
@@ -167,25 +188,61 @@ case "${1:-}" in
         (cd "$ARC_DIR" && python3 rb_task/tools/run_report.py "$RUN_DIR" --out "docs/runs/${NAME}_auto.md" ${MAN:+--manifest "$MAN"} --title "$NAME")
         ;;
     relbench)
+        # Default: CODE MODE (Qwen writes code using implementation cards built from the papers' full text and
+        # official code). ARC_SEARCH_MODE=config for the architecture-settings search of RUN-003.
+        #   ARC_DEADLINE_HOURS=24 ./run.sh relbench        (default 24; stage 13 stops ~75 min before the deadline)
+        #   ARC_DEADLINE_HOURS=3  ./run.sh relbench        (short test first!)
+        MODE="${ARC_SEARCH_MODE:-code}"
+        gpu_preflight
+        export ARC_RUN_STARTED_AT="$(date +%s)"
         write_manifest relbench "$@"
         IMAGE="$RB_IMAGE"
         export LLAMA_CTX="${LLAMA_CTX:-65536}"
         TOPIC="${2:-$DEFAULT_RB_TOPIC}"
+        if [ "$MODE" = "code" ]; then
+            CFG=config.arc.relbench.code.yaml; SPEC=/app/rb_task/task_spec/full_code.md
+            SEEDMAP="rb_model.py=rb_model_minimal.py"   # proposed starts as the official model only
+            PATIENCE="${ARC_REFINE_PATIENCE:-60}"; NOMET="${ARC_MAX_NO_METRICS:-30}"
+        else
+            CFG=config.arc.relbench.yaml; SPEC=/app/rb_task/task_spec/full.md
+            SEEDMAP=""
+            PATIENCE="${ARC_REFINE_PATIENCE:-5}"; NOMET="${ARC_MAX_NO_METRICS:-3}"
+        fi
         docker_run env \
             ARC_SEED_PROJECT_DIR=/app/rb_task/seed_project \
+            ARC_SEED_FILE_MAP="$SEEDMAP" \
             RB_RECIPE="${RB_RECIPE:-tuned}" \
-            ARC_TASK_SPEC_FILE=/app/rb_task/task_spec/full.md \
+            ARC_TASK_SPEC_FILE="$SPEC" \
             ARC_HIDE_TEST_METRICS=1 \
-            ARC_SEARCH_MODE="${ARC_SEARCH_MODE:-config}" \
+            ARC_SEARCH_MODE="$MODE" \
             ARC_SEARCH_SPACE_FILE=/app/rb_task/task_spec/search_space.json \
-            ARC_PROTECTED_FILES="main.py,rb_data.py,rb_loader.py,rb_text.py,rb_train.py" \
+            ARC_PROTECTED_FILES="main.py,rb_data.py,rb_loader.py,rb_text.py,rb_train.py,rb_model_official.py,rb_tokens.py" \
+            ARC_MAX_REFINE_ITERS="${ARC_MAX_REFINE_ITERS:-1000}" \
+            ARC_REQUIRE_COMPONENT_MATCH="${ARC_REQUIRE_COMPONENT_MATCH:-0}" \
+            ARC_REQUIRE_FULLTEXT="${ARC_REQUIRE_FULLTEXT:-1}" \
             ARC_MIN_IMPROVEMENT="${ARC_MIN_IMPROVEMENT:-0.005}" \
             ARC_KEEP_SEEDS=1 \
             ARC_PRESERVE_FILENAMES=1 \
+            ARC_METHOD_FILE=/app/rb_task/task_spec/METHOD_GROUND_TRUTH.md \
             ARC_CONFIRM_SEED_OFFSET="${ARC_CONFIRM_SEED_OFFSET:-100}" \
-            ARC_REFINE_PATIENCE="${ARC_REFINE_PATIENCE:-5}" \
+            ARC_REFINE_PATIENCE="$PATIENCE" \
+            ARC_MAX_NO_METRICS="$NOMET" \
             ARC_MAX_TOKENS_MULT="${ARC_MAX_TOKENS_MULT:-3}" \
-            researchclaw run --config config.arc.relbench.yaml \
+            ARC_RUN_STARTED_AT="$ARC_RUN_STARTED_AT" \
+            ARC_DEADLINE_HOURS="${ARC_DEADLINE_HOURS:-24}" \
+            ARC_DEADLINE_RESERVE_MIN="${ARC_DEADLINE_RESERVE_MIN:-75}" \
+            ARC_LIT_YEAR_MIN="${ARC_LIT_YEAR_MIN:-2010}" \
+            ARC_LIT_QUERIES_FILE="${ARC_LIT_QUERIES_FILE:-}" \
+            ARC_KNOWLEDGE_FILE=/app/rb_task/task_spec/KNOWLEDGE.md \
+            ARC_IMPL_CARDS_K="${ARC_IMPL_CARDS_K:-4}" \
+            ARC_KNOWLEDGE_MAX_CHARS="${ARC_KNOWLEDGE_MAX_CHARS:-20000}" \
+            ARC_PROMPT_HIDE_FILES="rb_model_official.py,rb_loader.py,rb_text.py" \
+            ARC_REQUIRE_KNOWLEDGE_REF="${ARC_REQUIRE_KNOWLEDGE_REF:-1}" \
+            ARC_EXTRA_REPOS="${ARC_EXTRA_REPOS:-}" \
+            ARC_HISTORY_LAST="${ARC_HISTORY_LAST:-12}" \
+            ARC_VENDOR_MAX_CHARS="${ARC_VENDOR_MAX_CHARS:-100000}" \
+            ARC_REPAIR_ON_WARNINGS="${ARC_REPAIR_ON_WARNINGS:-0}" \
+            researchclaw run --config "$CFG" \
             --topic "$TOPIC" --auto-approve
         ;;
     *)

@@ -72,6 +72,8 @@ experiment:
   time_budget_sec: 1800
   # RB: in config mode every step is one cheap evaluation (~2 min), so more steps are affordable.
   max_iterations: 12
+  # LONG RUN (e.g. 24 h): max_iterations: 150 and max_refine_duration_sec: 86400 (stage 13 stops at whichever comes first).
+  # One evaluation (3 conditions x 10 seeds) takes ~2 min, so ~25-30 evaluations/hour. See docs/runs/RUN-003 before doing it.
   # RB: ogni tentativo = chiamata LLM con thinking + una run; il default (1.5 x time_budget) e' troppo corto.
   max_refine_duration_sec: 7200
   metric_key: "primary_metric"

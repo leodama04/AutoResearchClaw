@@ -797,7 +797,8 @@ def _execute_iterative_refine(
         return None
 
     requested_iterations = int(getattr(config.experiment, "max_iterations", 10) or 10)
-    max_iterations = max(1, min(requested_iterations, 10))
+    max_iterations = max(1, min(requested_iterations, int(  # ARC patch: iteration cap
+        __import__("os").environ.get("ARC_MAX_REFINE_ITERS", "10") or 10)))
 
     # BUG-57: Wall-clock time cap for the entire refinement stage.
     # Default: 3× the per-iteration time budget (e.g., 2400s → 7200s = 2h).
@@ -1076,7 +1077,24 @@ def _execute_iterative_refine(
     # P1: Track metrics history for saturation detection
     _metrics_history: list[float | None] = [baseline_metric]
 
+    if _arc_state is not None:  # ARC patch: stage13 modes (warm start) [all modes]
+        try:
+            _ws = _arc.warm_start(_arc_state, best_files, best_metric, metric_direction)
+            if _ws is not None:
+                best_files, best_metric = _ws["files"], _ws["metric"]
+                best_version = "experiment_v0/"
+                _write_project(stage_dir / "experiment_v0", best_files)
+                log["iterations"].append(_ws["record"])
+                logger.warning(
+                    "Stage 13: warm start from an earlier pass: %s (%.4f)", _ws["overrides"], best_metric
+                )
+        except Exception as _w_exc:  # noqa: BLE001
+            logger.warning("Stage 13: warm start failed: %s", _w_exc)
     for iteration in range(1, max_iterations + 1):
+        if _arc is not None and _arc.past_deadline():  # ARC patch: global deadline
+            logger.warning("Stage 13: global deadline reached - stopping the refinement")
+            log["stop_reason"] = "global_deadline"
+            break
         # BUG-57: Check wall-clock time before starting a new iteration
         _elapsed = _time_bug57.monotonic() - _refine_start_time
         if _elapsed > _max_refine_wall_sec:
@@ -1122,7 +1140,11 @@ def _execute_iterative_refine(
                 )
                 logger.warning("Stage 13: metric saturation detected, injecting difficulty upgrade hint")
 
-        files_context = _files_to_context(best_files)
+        files_context = _files_to_context(  # ARC patch: hide files from the prompt
+            {k: v for k, v in best_files.items()
+             if not __import__("researchclaw.pipeline.stage_impls._arc_knowledge",  # ARC patch: hide prefixes
+                               fromlist=["hidden_file"]).hidden_file(k)}
+        )
         _arc_prev_best = dict(best_files)  # ARC patch: stage13 refine
         # BUG-10 fix: anchor refinement to original experiment plan
         _exp_plan_anchor = ""
@@ -1137,7 +1159,9 @@ def _execute_iterative_refine(
             metric_key=metric_key,
             metric_direction=metric_direction,
             files_context=files_context,
-            run_summaries=chr(10).join(run_summaries[:20]),
+            run_summaries=chr(10).join(  # ARC patch: recent history
+                _arc.summaries_for_prompt(run_summaries) if _arc_state is not None else run_summaries[:20]
+            ),
             condition_coverage_hint=_condition_coverage_hint,
             topic=config.research.topic,
             exp_plan_anchor=_exp_plan_anchor,
@@ -1187,7 +1211,17 @@ def _execute_iterative_refine(
                     stop_reason="acp_prompt_timeout",
                     iteration=iteration,
                 )
-            raise
+            if _arc_state is None:  # ARC patch: LLM errors do not end the refinement
+                raise
+            consecutive_no_metrics += 1
+            logger.warning("Stage 13 iteration %d: LLM call failed (%s) - attempt skipped", iteration, exc)
+            log["iterations"].append({"iteration": iteration, "llm_error": str(exc)[:500],
+                                     "metric": None, "improved": False})
+            _write_refinement_log()
+            if consecutive_no_metrics >= int(__import__("os").environ.get("ARC_MAX_NO_METRICS", "3") or 3):
+                log["stop_reason"] = "consecutive_no_metrics"
+                break
+            continue
         extracted_files = _extract_multi_file_blocks(response.content)
         # If LLM returns only single block, treat as main.py update
         if not extracted_files:
@@ -1253,7 +1287,7 @@ def _execute_iterative_refine(
             irp = _pm.sub_prompt(
                 "iterative_repair",
                 issue_text=issue_text,
-                all_files_ctx=_files_to_context(candidate_files),
+                all_files_ctx=_files_to_context(__import__("researchclaw.pipeline.stage_impls._arc_knowledge", fromlist=["visible_files"]).visible_files(candidate_files)),  # ARC patch: repair prompt files
             )
             try:
                 repair_response = _chat_with_prompt(llm, irp.system, irp.user)
@@ -1268,8 +1302,12 @@ def _execute_iterative_refine(
                         stop_reason="acp_prompt_timeout",
                         iteration=iteration,
                     )
-                raise
-            candidate_files["main.py"] = _extract_code_block(repair_response.content)
+                if _arc_state is None:  # ARC patch: LLM errors do not end the refinement (repair)
+                    raise
+                logger.warning("Stage 13 iteration %d: repair LLM call failed (%s)", iteration, exc)
+                repair_response = None
+            if repair_response is not None:
+                candidate_files["main.py"] = _extract_code_block(repair_response.content)
             validation = validate_code(candidate_files["main.py"])
             repaired = True
 
@@ -1303,9 +1341,13 @@ def _execute_iterative_refine(
                 config.experiment,
                 stage_dir / f"refine_sandbox_v{iteration}",
             )
-            rerun = sandbox.run_project(
-                version_dir,
-                timeout_sec=config.experiment.time_budget_sec,
+            rerun = (  # ARC patch: skip unchanged candidates
+                _arc.skipped_run()
+                if (_arc_state is not None and _arc.skip_run())
+                else sandbox.run_project(
+                    version_dir,
+                    timeout_sec=config.experiment.time_budget_sec,
+                )
             )
             _arc_final_run = rerun  # ARC patch: stage13 modes
             metric_val = _find_metric(rerun.metrics, metric_key)
@@ -1316,7 +1358,7 @@ def _execute_iterative_refine(
                 "metrics": rerun.metrics,
                 "elapsed_sec": rerun.elapsed_sec,
                 "timed_out": rerun.timed_out,
-                "stderr": rerun.stderr[:2000] if rerun.stderr else "",
+                "stderr": rerun.stderr[-4000:] if rerun.stderr else "",  # ARC patch: stderr tail
                 "stdout": _stdout_cap,
             }
             iter_record["metric"] = metric_val
@@ -1372,7 +1414,8 @@ def _execute_iterative_refine(
             runtime_issues = (  # ARC patch: stage13 modes (no code repair in config mode)
                 None
                 if (_arc_state is not None and _arc_state.config_mode)
-                else _detect_runtime_issues(rerun)
+                else (_arc.repair_issues(rerun, metric_val, _detect_runtime_issues)  # ARC patch: repair only real failures
+                      if _arc_state is not None else _detect_runtime_issues(rerun))
             )
             if runtime_issues:
                 iter_record["runtime_issues"] = runtime_issues
@@ -1385,7 +1428,7 @@ def _execute_iterative_refine(
                 rrp = _pm.sub_prompt(
                     "iterative_repair",
                     issue_text=runtime_issues,
-                    all_files_ctx=_files_to_context(candidate_files),
+                    all_files_ctx=_files_to_context(__import__("researchclaw.pipeline.stage_impls._arc_knowledge", fromlist=["visible_files"]).visible_files(candidate_files)),  # ARC patch: repair prompt files
                 )
                 try:
                     repair_resp = _chat_with_prompt(llm, rrp.system, rrp.user)
@@ -1400,19 +1443,33 @@ def _execute_iterative_refine(
                             stop_reason="acp_prompt_timeout",
                             iteration=iteration,
                         )
-                    raise
-                repaired_files = _extract_multi_file_blocks(repair_resp.content)
-                if not repaired_files:
+                    if _arc_state is None:  # ARC patch: LLM errors do not end the refinement (runtime repair)
+                        raise
+                    logger.warning("Stage 13 iteration %d: runtime-repair LLM call failed (%s) - repair skipped",
+                                   iteration, exc)
+                    iter_record["repair_llm_error"] = str(exc)[:300]
+                    repair_resp = None
+                repaired_files = (_extract_multi_file_blocks(repair_resp.content)
+                                  if repair_resp is not None else {})
+                if not repaired_files and repair_resp is not None:
                     single = _extract_code_block(repair_resp.content)
                     if single.strip():
                         repaired_files = dict(candidate_files)
-                        repaired_files["main.py"] = single
+                        repaired_files[  # ARC patch: repair target
+                            _arc.target_for_block(single, candidate_files) if _arc is not None else "main.py"
+                        ] = single
                 if repaired_files:
                     # BUG-106 fix: merge instead of replace to preserve
                     # supporting modules (trainers.py, utils.py, etc.)
                     merged = dict(candidate_files)
+                    if _arc_state is not None:  # ARC patch: guard after repair
+                        repaired_files = _arc.retarget_repair(repaired_files, candidate_files, _arc_state.protected)
                     merged.update(repaired_files)
                     candidate_files = merged
+                    if _arc_state is not None:
+                        candidate_files, _g2 = _arc.guard_candidate(
+                            best_files, candidate_files, _arc_state.space, _arc_state.protected
+                        )
                     _write_project(version_dir, candidate_files)
                     # Re-run after runtime fix
                     sandbox2 = create_sandbox(
@@ -1430,6 +1487,7 @@ def _execute_iterative_refine(
                         "metrics": rerun2.metrics,
                         "elapsed_sec": rerun2.elapsed_sec,
                         "timed_out": rerun2.timed_out,
+                        "stderr": (rerun2.stderr or "")[-4000:],  # ARC patch: stderr after fix
                     }
                     iter_record["metric"] = metric_val
                     iter_record["runtime_repaired"] = True
@@ -1441,9 +1499,25 @@ def _execute_iterative_refine(
                     iter_record["arc_rejected"] = _why
                     iter_record["metric"] = None
                     metric_val = None
+            if _arc_state is not None and metric_val is not None:  # ARC patch: knowledge gate
+                _ok2, _why2 = _arc.knowledge_gate(_arc_final_run, candidate_files, _arc_state)
+                if not _ok2:
+                    logger.warning("Stage 13 iteration %d: rejected (%s)", iteration, _why2)
+                    iter_record["arc_rejected"] = _why2
+                    iter_record["metric"] = None
+                    metric_val = None
             if metric_val is not None:
                 consecutive_no_metrics = 0
                 # R6-1: Only count toward no_improve_streak when we have real metrics
+                if (  # ARC patch: recheck before accepting
+                    _arc_state is not None and _arc.recheck_enabled()
+                    and _is_better(metric_val, best_metric)
+                    and _arc.margin_ok(metric_val, best_metric, metric_direction, _arc_state.margin)
+                ):
+                    _mv2 = _arc.recheck(metric_val, version_dir, stage_dir, iteration, config, create_sandbox,
+                                        metric_key, iter_record, _arc_state, logger)
+                    metric_val = _mv2 if _mv2 is not None else _arc.no_gain_value(best_metric, metric_direction)
+                    iter_record["metric"] = _mv2
                 if _is_better(metric_val, best_metric) and (  # ARC patch: noise margin
                     _arc_state is None
                     or _arc.margin_ok(metric_val, best_metric, metric_direction, _arc_state.margin)
@@ -1476,7 +1550,9 @@ def _execute_iterative_refine(
         except Exception:  # noqa: BLE001
             pass
 
-        if consecutive_no_metrics >= 3:
+        if consecutive_no_metrics >= int(  # ARC patch: failure tolerance
+            __import__("os").environ.get("ARC_MAX_NO_METRICS", "3") or 3
+        ):
             log["stop_reason"] = "consecutive_no_metrics"
             logger.warning("Stage 13: Aborting after %d consecutive iterations without metrics", consecutive_no_metrics)
             break

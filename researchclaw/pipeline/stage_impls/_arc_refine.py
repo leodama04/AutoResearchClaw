@@ -72,6 +72,26 @@ def _diff(prev: dict[str, str], new: dict[str, str], limit: int = 1800) -> tuple
     return changed, text
 
 
+_ERR_LINE = re.compile(r"(Error|Exception|Traceback|error:|File \"[^\"]*experiment|line \d+, in )")
+
+
+def error_excerpt(iter_record: dict, limit: int = 900) -> str:
+    """The traceback of the failed run (warnings removed): what the LLM needs to fix its code."""
+    texts = []
+    for key in ("sandbox_after_fix", "sandbox"):
+        sb = iter_record.get(key) or {}
+        if sb.get("stderr"):
+            texts.append(sb["stderr"])
+    for text in texts:
+        lines = [l for l in text.splitlines() if l.strip() and "Warning" not in l and "warnings.warn" not in l]
+        keep = [l for l in lines if _ERR_LINE.search(l)]
+        if keep:
+            return "\n".join(keep[-8:])[-limit:]
+        if lines:
+            return "\n".join(lines[-6:])[-limit:]
+    return ""
+
+
 def history_line(
     iteration: int,
     iter_record: dict,
@@ -88,8 +108,17 @@ def history_line(
         lines.append(f"  configuration overrides: {json.dumps(iter_record['arc_overrides'], sort_keys=True)}")
     if iter_record.get("arc_rejected"):
         lines.append(f"  REJECTED (not a valid evaluation): {iter_record['arc_rejected']}")
-    if metric is None:
-        err = (sandbox.get("stderr") or "").strip()[-400:]
+    if "arc_official_code" in iter_record:
+        oc = iter_record["arc_official_code"]
+        lines.append(f"  official code imported: {', '.join(oc) if oc else 'NONE (re-implemented from scratch)'}")
+    discarded = [n for n in iter_record.get("arc_guard_notes", []) if "restored" in n or "dropped" in n or "removed" in n]
+    if discarded:
+        lines.append(f"  DISCARDED by the guard (did not reach the model): {'; '.join(discarded)[:300]}")
+    if metric is None and "GPU_UNAVAILABLE" in str(sandbox.get("stdout") or ""):
+        lines.append("  RESULT: NOT EVALUATED - the GPU was occupied by other processes (environment problem, "
+                     "not caused by your change). You may retry the same idea.")
+    elif metric is None:
+        err = error_excerpt(iter_record)
         lines.append(
             "  RESULT: no primary_metric produced"
             + (f" (returncode={sandbox.get('returncode')}). stderr tail: {err}" if err else "")
@@ -191,7 +220,10 @@ def read_overrides(config_text: str, var: str) -> dict | None:
 
 
 def write_overrides(config_text: str, var: str, overrides: dict) -> str | None:
-    """Replace the top-level assignment `var = {...}` with the given dict (None if not found)."""
+    """Replace the top-level assignment `var = {...}` with the given dict (None if not found).
+    The text is left untouched when the dict is already the same (no cosmetic differences)."""
+    if read_overrides(config_text, var) == overrides:
+        return config_text
     try:
         tree = ast.parse(config_text)
     except SyntaxError:
@@ -206,12 +238,110 @@ def write_overrides(config_text: str, var: str, overrides: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------------- guard
+_SRC_RE = re.compile(r'^PROPOSED_SOURCE\s*=.*$', re.MULTILINE)
+
+
+def _proposed_source(config_text: str) -> str:
+    try:
+        tree = ast.parse(config_text)
+    except SyntaxError:
+        return ""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PROPOSED_SOURCE" for t in node.targets):
+            try:
+                val = ast.literal_eval(node.value)
+            except (ValueError, SyntaxError):
+                return ""
+            return val if isinstance(val, str) else ""
+    return ""
+
+
+def set_proposed_source(config_text: str, source: str) -> str:
+    if not _SRC_RE.search(config_text) or _proposed_source(config_text) == str(source)[:300]:
+        return config_text
+    return _SRC_RE.sub(lambda m: f"PROPOSED_SOURCE = {str(source)[:300]!r}", config_text, count=1)
+
+
+LAST_GUARD: dict = {}
+_VENDOR_IMPORT = re.compile(r"^\s*(?:from|import)\s+(vendor_\w+)", re.MULTILINE)
+
+
+def official_imports(files: dict) -> list[str]:
+    """Official-code modules (vendor_*.py) imported by the files the LLM writes."""
+    found = set()
+    for name, text in files.items():
+        if name.endswith(".py") and not name.startswith(("vendor_", "rb_model_official")):
+            found.update(_VENDOR_IMPORT.findall(text or ""))
+    return sorted(found)
+
+
+def skip_run() -> bool:
+    """A candidate identical to the best version is not run at all (it would only measure noise)."""
+    return bool(LAST_GUARD.get("unchanged")) and _env("ARC_SKIP_UNCHANGED", "1") == "1"
+
+
+def skipped_run():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        returncode=0, stdout="", elapsed_sec=0.0, metrics={}, timed_out=False, arc_skipped=True,
+        stderr=("SKIPPED - nothing changed with respect to the current best version, so the run was not executed. "
+                "Your edits did not reach the model: edits to protected files (main.py, rb_train.py, rb_data.py, "
+                "rb_model_official.py, vendor_*.py ...) are discarded. Change rb_model.py / new files and activate the "
+                "change in PROPOSED_OVERRIDES."),  # no 'Error'/'Warning'/'inf' words: must not trigger a repair
+    )
+
+
+def target_for_block(code: str, files: dict) -> str:
+    """File an UNLABELLED code block returned by a repair belongs to (the pipeline used to call it main.py,
+    which overwrote main.py with the model code in RUN-005)."""
+    import difflib
+
+    if "def build_model" in code or "class Model(" in code:
+        return "rb_model.py"
+    if "PROPOSED_OVERRIDES" in code:
+        return "rb_config.py"
+    best, score = "main.py", 0.0
+    for name, text in files.items():
+        if name.startswith("vendor_") or not name.endswith(".py"):
+            continue
+        r = difflib.SequenceMatcher(None, code[:4000], text[:4000]).ratio()
+        if r > score:
+            best, score = name, r
+    return best
+
+
+def retarget_repair(repaired: dict, current: dict, protected: list[str]) -> dict:
+    """A repair that writes model code into a protected file (e.g. main.py) is moved to the file it belongs to."""
+    prefixes = [x.strip() for x in _env("ARC_PROTECTED_PREFIXES", "vendor_").split(",") if x.strip()]
+    locked = set(protected) | {n for n in current if any(n.startswith(p) for p in prefixes)}
+    editable = {k: v for k, v in current.items() if k not in locked}
+    out = {}
+    for name, code in repaired.items():
+        if name in locked and code != current.get(name):
+            target = target_for_block(code, editable)
+            if target not in locked:
+                out[target] = code
+                continue
+        out[name] = code
+    return out
+
+
 def guard_candidate(best_files: dict, candidate: dict, space_cfg: dict | None, protected: list[str]) -> tuple[dict, list[str]]:
     """Undo every change outside what the refinement may touch.
     - files in `protected` are restored from the best version;
     - the config file keeps everything of the best version except the validated override dict."""
     notes: list[str] = []
     out = dict(candidate)
+    prefixes = [x.strip() for x in _env("ARC_PROTECTED_PREFIXES", "vendor_").split(",") if x.strip()]
+    for name in list(out):
+        if any(name.startswith(pfx) for pfx in prefixes):
+            if name in best_files and out[name] != best_files[name]:
+                out[name] = best_files[name]
+                notes.append(f"restored read-only file {name}")
+            elif name not in best_files:
+                del out[name]
+                notes.append(f"dropped new read-only file {name}")
     for name in protected:
         if name in best_files and out.get(name) != best_files[name]:
             out[name] = best_files[name]
@@ -227,9 +357,18 @@ def guard_candidate(best_files: dict, candidate: dict, space_cfg: dict | None, p
             if prop is None:
                 prop = read_overrides(best_files[cfile], var) or {}
                 notes.append(f"{cfile}: override dict unreadable, kept the best one")
-            clean, errs = validate_overrides(space_cfg, prop)
+            if _env("ARC_SEARCH_MODE") == "config":
+                clean, errs = validate_overrides(space_cfg, prop)
+            else:  # code mode: the LLM may introduce new keys for the components it implements
+                clean, errs = (dict(prop) if isinstance(prop, dict) else {}), []
+                locked = set(space_cfg.get("locked_keys", []))
+                if _env("ARC_LOCK_RECIPE", "1") == "1" and locked & set(clean):
+                    errs = [f"training-recipe keys are fixed and were removed: {sorted(locked & set(clean))}"]
+                    clean = {k: v for k, v in clean.items() if k not in locked}
             notes += [f"{cfile}: {e}" for e in errs]
             new_text = write_overrides(best_files[cfile], var, clean)
+            if new_text is not None and _env("ARC_SEARCH_MODE") != "config":
+                new_text = set_proposed_source(new_text, _proposed_source(cand_text))
             if new_text is not None:
                 if new_text != cand_text:
                     notes.append(f"{cfile}: everything except {var} restored")
@@ -239,6 +378,11 @@ def guard_candidate(best_files: dict, candidate: dict, space_cfg: dict | None, p
         if name not in best_files and _env("ARC_SEARCH_MODE") == "config":
             del out[name]
             notes.append(f"dropped unknown file {name}")
+    LAST_GUARD["unchanged"] = all(out.get(k) == v for k, v in best_files.items()) and set(out) == set(best_files)
+    if LAST_GUARD["unchanged"]:
+        notes.append("the candidate is identical to the current best version")
+    LAST_GUARD["notes"] = list(notes)
+    LAST_GUARD["official_imports"] = official_imports(out)
     return out, notes
 
 
@@ -309,13 +453,78 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def _evaluated(log: dict, baseline_overrides: dict | None = None) -> list[tuple[dict, float | None, str]]:
+def previous_passes(run_dir) -> list[dict]:
+    """Refinement logs of earlier passes of this run (the pipeline archives them as stage-13_v1, _v2, ...)."""
+    logs = []
+    for p in Path(run_dir).glob("stage-13_v*/refinement_log.json"):
+        try:
+            L = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        L["_dir"] = str(p.parent)
+        logs.append(L)
+    logs.sort(key=lambda L: str(L.get("generated", "")))
+    return logs
+
+
+def _evaluated(log: dict, prev_logs: list | None = None) -> list[tuple[dict, float | None, str]]:
+    """All configurations evaluated so far in this run (earlier passes first); carried-over records are skipped."""
     rows = [({}, None, "initial")]
-    for it in log.get("iterations", []):
-        if isinstance(it, dict) and "arc_overrides" in it:
-            note = it.get("arc_rejected") or ("improved" if it.get("improved") else "")
-            rows.append((it["arc_overrides"], it.get("metric"), note))
+    for L in list(prev_logs or []) + [log]:
+        for it in L.get("iterations", []):
+            if isinstance(it, dict) and "arc_overrides" in it and not it.get("arc_carried_from"):
+                note = it.get("arc_rejected") or ("improved" if it.get("improved") else "")
+                rows.append((it["arc_overrides"], it.get("metric"), note))
     return rows
+
+
+def warm_start(state: "ModeState", best_files: dict, best_metric, direction: str = "maximize") -> dict | None:
+    """Start this pass from the best configuration found by earlier passes (if it beats the current best)."""
+    cfile, var = state.space["config_file"], state.space["variable"]
+    best_rec, best_val = None, None
+    best_dir = None
+    for L in state.prev_logs:
+        for it in L.get("iterations", []):
+            m = it.get("metric") if isinstance(it, dict) else None
+            if not isinstance(m, (int, float)) or it.get("arc_rejected") or it.get("arc_carried_from"):
+                continue
+            if state.config_mode and "arc_overrides" not in it:
+                continue
+            better = best_val is None or ((m > best_val) if direction != "minimize" else (m < best_val))
+            if better:
+                best_rec, best_val, best_dir = it, m, L.get("_dir")
+    if best_rec is None:
+        return None
+    # The upstream pipeline already recovers the best metric of earlier passes (BUG-58) but NOT their files: warm-start
+    # whenever the earlier best is at least as good as the current best metric (a tiny tolerance covers rounding).
+    eps = 1e-9
+    if best_metric is not None and ((best_val < best_metric - eps) if direction != "minimize" else (best_val > best_metric + eps)):
+        return None
+    if not state.config_mode:  # code mode: the whole project of the best earlier version
+        vdir = Path(str(best_dir or "")) / str(best_rec.get("version_dir", "")).strip("/")
+        if not vdir.is_dir():
+            return None
+        files = {p.name: p.read_text(encoding="utf-8") for p in vdir.glob("*.py")}
+        if not files:
+            return None
+        best_rec = dict(best_rec)
+        best_rec.setdefault("arc_overrides", read_overrides(files.get(cfile, ""), var) or {})
+    else:
+        new_text = write_overrides(best_files[cfile], var, best_rec["arc_overrides"])
+        if new_text is None:
+            return None
+        files = dict(best_files)
+        files[cfile] = new_text
+    sbx = best_rec.get("sandbox_after_fix") or best_rec.get("sandbox") or {}
+    record = {
+        "iteration": 0, "version_dir": "experiment_v0/", "files": sorted(files), "validation_ok": True,
+        "validation_summary": "carried over from an earlier pass", "repaired": False, "metric": best_val,
+        "improved": False, "arc_overrides": dict(best_rec["arc_overrides"]),
+        "arc_carried_from": f"iteration {best_rec.get('iteration')} of an earlier pass",
+        "sandbox": {"returncode": sbx.get("returncode", 0), "metrics": sbx.get("metrics", {}),
+                    "elapsed_sec": sbx.get("elapsed_sec"), "timed_out": False, "stderr": "", "stdout": ""},
+    }
+    return {"files": files, "metric": best_val, "overrides": dict(best_rec["arc_overrides"]), "record": record}
 
 
 def _neighbours(space_cfg: dict, base: dict) -> list[dict]:
@@ -387,7 +596,7 @@ def propose_config(chat, llm, state: "ModeState", best_files: dict, log: dict, i
     space_cfg = state.space
     cfile, var = space_cfg["config_file"], space_cfg["variable"]
     best = read_overrides(best_files[cfile], var) or {}
-    rows = _evaluated(log)
+    rows = _evaluated(log, state.prev_logs)
     seen = {canon(r[0]) for r in rows}
     max_keys = int(space_cfg.get("max_keys_changed_per_step", 3))
     system, user = build_proposal_prompt(space_cfg, rows, best, best_metric, baseline_metric, state.expected,
@@ -439,6 +648,14 @@ class ModeState:
         self.topic = topic
         self.confirm_offset = _env("ARC_CONFIRM_SEED_OFFSET")
         self.stage_dir = Path(stage_dir)
+        self.run_dir = Path(run_dir)
+        self.prev_logs = previous_passes(run_dir)
+        mf = _env("ARC_METHOD_FILE")
+        if mf and not self.prev_logs:  # first pass of a run: never leak the description of an earlier run
+            try:
+                Path(mf).write_text("# (no description yet - generated at the end of stage 13)\n", encoding="utf-8")
+            except OSError:
+                pass
 
     @property
     def config_mode(self) -> bool:
@@ -451,6 +668,9 @@ class ModeState:
 
 
 def annotate(iter_record: dict, state: ModeState) -> None:
+    if LAST_GUARD.get("notes"):
+        iter_record["arc_guard_notes"] = list(LAST_GUARD["notes"])[:6]
+    iter_record["arc_official_code"] = list(LAST_GUARD.get("official_imports", []))
     if state.config_mode and LAST:
         iter_record["arc_overrides"] = dict(LAST.get("overrides", {}))
         iter_record["arc_source"] = LAST.get("source")
@@ -484,9 +704,23 @@ def confirm(state: ModeState, config, stage_dir: Path, best_files: dict, best_ve
     sandbox = create_sandbox(config.experiment, Path(stage_dir) / "confirm_sandbox")
     res = sandbox.run_project(cdir, timeout_sec=config.experiment.time_budget_sec)
     ok, why = run_is_valid(res, state.expected)
+    per_seed: list = []
+    for rj in sorted((Path(stage_dir) / "confirm_sandbox").glob("_project*/results.json")):
+        try:
+            per_seed = json.loads(rj.read_text(encoding="utf-8")).get("results", [])
+        except (OSError, ValueError):
+            pass
     info = {"seed_offset": int(state.confirm_offset), "valid": ok, "reason": why,
             "returncode": res.returncode, "metrics": res.metrics}
+    if ok and per_seed:
+        info["paired"] = {f"{a}-{b}:{k}": paired_stats(per_seed, a, b, k)
+                          for a, b in (("proposed", "baseline_tuned"), ("proposed", "baseline_graphsage"), ("baseline_tuned", "baseline_graphsage"))
+                          for k in ("val", "test")}
     (Path(stage_dir) / "confirmation.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    try:
+        write_method_file(state, best_files, best_version, log, info, per_seed)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Stage 13: could not write the method file: %s", exc)
     log["confirmation"] = {k: v for k, v in info.items() if k != "metrics"}
     if not ok:
         logger.warning("Stage 13: confirmation run not valid (%s)", why)
@@ -508,3 +742,289 @@ def confirm(state: ModeState, config, stage_dir: Path, best_files: dict, best_ve
                      f"| {m.get(cond + '_test_roc_auc_mean', float('nan')):.4f} ± {m.get(cond + '_test_roc_auc_std', float('nan')):.4f} |")
     (Path(stage_dir) / "confirmation.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     logger.warning("Stage 13: confirmation done -> %s", (Path(stage_dir) / "confirmation.md"))
+
+
+# =====================================================================================================
+# Ground truth about the evaluated method + paired statistics (used by the analysis / paper stages)
+# =====================================================================================================
+def paired_stats(results: list[dict], a: str, b: str, key: str) -> dict | None:
+    """Paired comparison of condition `a` minus `b` over common seeds (exact sign-flip test, bootstrap CI)."""
+    import itertools
+
+    import numpy as np
+
+    va = {r["seed"]: r[key] for r in results if r.get("condition") == a and key in r}
+    vb = {r["seed"]: r[key] for r in results if r.get("condition") == b and key in r}
+    seeds = sorted(set(va) & set(vb))
+    if len(seeds) < 3:
+        return None
+    d = np.array([va[s] - vb[s] for s in seeds], dtype=float)
+    n = len(d)
+    mean, se = float(d.mean()), float(d.std(ddof=1) / math.sqrt(n))
+    if n <= 16:
+        flips = np.array(list(itertools.product([-1, 1], repeat=n)))
+        p = float((np.abs((flips * d).mean(1)) >= abs(mean) - 1e-12).mean())
+    else:
+        p = float("nan")
+    rng = np.random.default_rng(0)
+    boots = np.array([d[rng.integers(0, n, n)].mean() for _ in range(10000)])
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    return {"n": n, "mean_diff": mean, "se": se, "ci95": [float(lo), float(hi)], "p_signflip": p,
+            "seeds_better": int((d > 0).sum())}
+
+
+def _code_changes(files: dict) -> str:
+    """Summary of what the LLM changed in the editable model with respect to the frozen official one."""
+    import difflib
+
+    new, off = files.get("rb_model.py", ""), files.get("rb_model_official.py", "")
+    if not new or not off:
+        return ""
+    diff = [l for l in difflib.unified_diff(off.splitlines(), new.splitlines(), lineterm="", n=0)
+            if l[:1] in "+-" and not l.startswith(("+++", "---"))]
+    added = re.findall(r"^\+\s*(?:class|def)\s+(\w+)", "\n".join(diff), re.MULTILINE)
+    extra = sorted(n for n in files if n.endswith(".py") and n not in {
+        "main.py", "rb_config.py", "rb_data.py", "rb_loader.py", "rb_model.py", "rb_model_official.py", "rb_text.py", "rb_train.py"})
+    src = _proposed_source(files.get("rb_config.py", ""))
+    parts = [f"- declared source (implementation card): {src or 'none'}",
+             f"- rb_model.py vs the official model: {len(diff)} changed lines; new classes/functions: {added or 'none'}",
+             "- the exact changed lines (describe THESE operations, using standard names such as TransformerConv; option "
+             "names chosen by the LLM, e.g. a gnn_type called after a paper, are NOT the name of the method):",
+             "```diff", *[l[:160] for l in diff[:60]], "```"]
+    if extra:
+        parts.append(f"- new files: {extra}")
+    return "\n".join(parts)
+
+
+def write_method_file(state: ModeState, best_files: dict, best_version: str, log: dict, conf_info: dict | None, results: list | None) -> None:
+    """Authoritative description of what was actually evaluated, for the analysis / paper stages."""
+    path = _env("ARC_METHOD_FILE")
+    if not path:
+        return
+    cfile, var = state.space["config_file"], state.space["variable"]
+    overrides = read_overrides(best_files.get(cfile, ""), var) or {}
+    defaults = state.space.get("defaults", {})
+    rows = _evaluated(log, state.prev_logs)
+    n_eval = len(rows) - 1
+    valid = [(o, m) for o, m, note in rows[1:] if m is not None]
+    L = ["## GROUND TRUTH ABOUT THE EVALUATED METHOD (generated from the run's own files; authoritative)", ""]
+    code_changes = _code_changes(best_files) if state.mode == "code" else ""
+    if code_changes:
+        L.append("The model evaluated as `proposed` is the OFFICIAL RelBench pipeline (PyTorch Frame feature encoder + relative-time "
+                 "encoder + heterogeneous GNN + MLP head) with the code changes and settings below. Describe exactly these; do not "
+                 "invent components.")
+        L.append(code_changes)
+        L.append("Settings of `proposed` that differ from the official defaults:")
+    else:
+        L.append("There is NO new named method, module or layer. The model evaluated as `proposed` is the OFFICIAL RelBench heterogeneous "
+                 "GraphSAGE pipeline (PyTorch Frame feature encoder + relative-time encoder + GNN + MLP head) with only these "
+                 "architecture settings changed (every other setting is the official default):")
+    if overrides:
+        for k, v in sorted(overrides.items()):
+            L.append(f"- `{k}` = {v!r} (official default: {defaults.get(k)!r}) - {state.space['space'].get(k, {}).get('doc', '')}")
+    else:
+        L.append("- (none: `proposed` is identical to `baseline_tuned`; the search found no better configuration)")
+    L += ["", "Conditions: `baseline_graphsage` = official model with the official training recipe (batch size 512); "
+          "`baseline_tuned` = the same official architecture with a better recipe (batch size 128, i.e. 4x more optimiser updates); "
+          "`proposed` = `baseline_tuned` + the changes above (same recipe as `baseline_tuned`).",
+          f"Search procedure: sequential search over architecture settings proposed by an LLM and executed automatically; {n_eval} "
+          f"configurations evaluated ({len(valid)} valid), selection metric = validation ROC-AUC averaged over seeds. The test split "
+          "was never used for selection. The search space is in `search_space.json` (operator, depth, width, aggregation, dropout, "
+          "residual / jumping knowledge, encoder depth/width/dropout, time encoding, readout depth).", ""]
+    if valid:
+        L.append("Evaluated configurations (validation ROC-AUC of `proposed`, mean over seeds):")
+        for o, m in sorted(valid, key=lambda x: -x[1])[:12]:
+            L.append(f"- {json.dumps(o, sort_keys=True)}: {m:.4f}")
+        L.append("")
+    if conf_info and conf_info.get("valid"):
+        m = conf_info["metrics"]
+        L.append(f"CONFIRMATION on fresh seeds (offset {conf_info['seed_offset']}, never used for selection) - the numbers to report:")
+        for c in sorted(k[: -len("_n_seeds")] for k in m if k.endswith("_n_seeds")):
+            L.append(f"- {c}: val ROC-AUC {m.get(c + '_val_roc_auc_mean', float('nan')):.4f} +/- {m.get(c + '_val_roc_auc_std', float('nan')):.4f}, "
+                     f"test ROC-AUC {m.get(c + '_test_roc_auc_mean', float('nan')):.4f} +/- {m.get(c + '_test_roc_auc_std', float('nan')):.4f} "
+                     f"({int(m[c + '_n_seeds'])} seeds)")
+        for a, b in (("proposed", "baseline_tuned"), ("proposed", "baseline_graphsage"), ("baseline_tuned", "baseline_graphsage")):
+            for key, name in (("val", "validation"), ("test", "test")):
+                st = paired_stats(results or [], a, b, key)
+                if st:
+                    L.append(f"- paired {name} difference {a} - {b}: {st['mean_diff']:+.4f} (95% bootstrap CI [{st['ci95'][0]:+.4f}, {st['ci95'][1]:+.4f}], "
+                             f"better on {st['seeds_better']}/{st['n']} seeds, sign-flip p = {st['p_signflip']:.3f})")
+        L.append("")
+    L += ["RULES FOR WRITING: describe the method exactly as above and do not invent components (no projection matrices, attention "
+          "modules, new loss terms or named methods); hypotheses written before the experiments may mention components that were "
+          "never implemented - ignore them. Report the confirmation numbers (not only the best search run), state which differences are "
+          "statistically supported and which are not, and note that the official baseline is under-trained, so most of the gain over it "
+          "comes from the training recipe (`baseline_tuned`), not from the architecture. Validation and test are single splits of one "
+          "dataset: do not generalise beyond rel-f1 / driver-top3."]
+    try:
+        Path(path).write_text("\n".join(L) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def method_text() -> str:
+    path = _env("ARC_METHOD_FILE")
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text if "GROUND TRUTH ABOUT THE EVALUATED METHOD" in text else ""
+
+
+# =====================================================================================================
+# Knowledge gate (code mode) + "change actually activated" check + global deadline
+# =====================================================================================================
+def knowledge_gate(run, candidate_files: dict, state) -> tuple[bool, str]:
+    m = getattr(run, "metrics", None) or {}
+    if LAST_GUARD.get("unchanged") and _env("ARC_REJECT_UNCHANGED", "1") == "1":
+        return False, ("nothing changed with respect to the current best version: re-running the same code only "
+                       "measures noise - change the model")
+    if m.get("proposed_identical_to_baseline") == 1.0:
+        return False, ("`proposed` is functionally identical to `baseline_tuned` (same outputs at initialisation): "
+                       "the change was not activated - enable it through PROPOSED_OVERRIDES or change rb_model.py")
+    if getattr(state, "mode", "") == "code" and _env("ARC_REQUIRE_KNOWLEDGE_REF", "1") == "1":
+        try:
+            from researchclaw.pipeline.stage_impls._arc_knowledge import knowledge_ref_ok
+        except ImportError:
+            return True, ""
+        cfile = (state.space or {}).get("config_file", "rb_config.py") if getattr(state, "space", None) else "rb_config.py"
+        return knowledge_ref_ok(candidate_files or {}, cfile)
+    return True, ""
+
+
+def past_deadline() -> bool:
+    """True when the global time budget of the run (ARC_RUN_STARTED_AT + ARC_DEADLINE_HOURS) is about to end;
+    ARC_DEADLINE_RESERVE_MIN minutes are kept for the analysis and writing stages."""
+    try:
+        start = float(_env("ARC_RUN_STARTED_AT") or 0)
+        hours = float(_env("ARC_DEADLINE_HOURS") or 0)
+        reserve = float(_env("ARC_DEADLINE_RESERVE_MIN", "75") or 75)
+    except ValueError:
+        return False
+    if start <= 0 or hours <= 0:
+        return False
+    import time as _t
+
+    return _t.time() > start + hours * 3600 - reserve * 60
+
+
+# =====================================================================================================
+# Noise-robust acceptance: a candidate that beats the best is re-evaluated on a second set of seeds
+# =====================================================================================================
+def no_gain_value(best, direction: str):
+    """A value that is never an improvement over `best` (used when the re-check run is not valid)."""
+    return best - 1e-6 if direction != "minimize" else best + 1e-6
+
+
+def recheck_enabled() -> bool:
+    return _env("ARC_RECHECK", "1") == "1"
+
+
+def recheck(metric_val, version_dir, stage_dir, iteration, config, create_sandbox, metric_key, iter_record, state, logger):
+    """In RUN-005 the same code evaluated three times gave 0.790, 0.806 and 0.816: the 'improvements' were noise.
+    Before accepting, re-run the candidate on seeds that differ from the selection seeds and use the MEAN of the two
+    evaluations. Returns the new metric (None if the second run is not valid)."""
+    import shutil
+
+    offset = int(_env("ARC_RECHECK_SEED_OFFSET", "200") or 200)
+    files = {p.name: p.read_text(encoding="utf-8") for p in Path(version_dir).glob("*.py")}
+    cfile = (state.space or {}).get("config_file", "rb_config.py") if getattr(state, "space", None) else "rb_config.py"
+    mod = make_confirm_files(files, offset, cfile)
+    if mod is None:
+        return metric_val
+    rdir = Path(stage_dir) / f"recheck_v{iteration}"
+    if rdir.exists():
+        shutil.rmtree(rdir, ignore_errors=True)
+    rdir.mkdir(parents=True)
+    for name, text in mod.items():
+        (rdir / name).write_text(text, encoding="utf-8")
+    sandbox = create_sandbox(config.experiment, Path(stage_dir) / f"recheck_sandbox_v{iteration}")
+    res = sandbox.run_project(rdir, timeout_sec=config.experiment.time_budget_sec)
+    ok, why = run_is_valid(res, state.expected, metric_key)
+    second = (res.metrics or {}).get(metric_key) if ok else None
+    iter_record["arc_recheck"] = {"seed_offset": offset, "first": metric_val, "second": second, "valid": ok, "reason": why}
+    if second is None:
+        logger.warning("Stage 13 iteration %d: re-check run not valid (%s)", iteration, why)
+        return None
+    mean = (float(metric_val) + float(second)) / 2.0
+    logger.warning("Stage 13 iteration %d: re-check %.4f / %.4f -> %.4f", iteration, metric_val, second, mean)
+    return mean
+
+
+# =====================================================================================================
+# 0.6.3: repair only real failures, recent history in the prompt, environment problems (busy GPU)
+# =====================================================================================================
+def gpu_unavailable(run: Any) -> bool:
+    """main.py printed GPU_UNAVAILABLE: the GPU stayed full (other processes) - nothing to repair in the code."""
+    return "GPU_UNAVAILABLE" in (getattr(run, "stdout", "") or "")
+
+
+def repair_issues(run: Any, metric_val, detect) -> str:
+    """Text for the stage-13 runtime repair, or '' when no repair is needed.
+
+    Upstream asks the LLM to 'repair' every run whose stderr contains the word Warning; torch_frame prints
+    UserWarnings in every RelBench run, so every attempt - even a valid one - was followed by a repair call and a
+    second run, and the evaluated code was the repaired one. Here the repair runs only if the run really failed:
+    non-zero exit (not a timeout), no primary metric, or NaN/Inf metrics. ARC_REPAIR_ON_WARNINGS=1 restores upstream."""
+    if _env("ARC_REPAIR_ON_WARNINGS") == "1":
+        return detect(run)
+    if gpu_unavailable(run) or getattr(run, "arc_skipped", False):
+        return ""  # environment problem / unchanged candidate that was not run: nothing to repair
+    rc = getattr(run, "returncode", None)
+    timed_out = bool(getattr(run, "timed_out", False))
+    bad_values = False
+    for v in (getattr(run, "metrics", None) or {}).values():
+        try:
+            bad_values = bad_values or not math.isfinite(float(v))
+        except (TypeError, ValueError):
+            pass
+    failed = (rc not in (0, None) and not timed_out) or metric_val is None or bad_values
+    if not failed:
+        return ""
+    text = detect(run) or ""
+    if not text:
+        tail = (getattr(run, "stderr", "") or "")[-3000:]
+        text = (f"The run exited with code {rc} and produced no primary metric."
+                + (f"\nstderr tail:\n{tail}" if tail.strip() else ""))
+    return text
+
+
+_HISTORY_PREFIX = "REFINEMENT HISTORY"
+
+
+def _digest(entry: str) -> str:
+    lines = entry.splitlines()
+    m = re.search(r"attempt (\d+)", lines[0] if lines else "")
+    head = f"attempt {m.group(1)}" if m else (lines[0][:60] if lines else "")
+    keep = [ln.strip() for ln in lines[1:]
+            if ln.strip().startswith(("files changed", "configuration overrides", "REJECTED", "RESULT", "official code"))]
+    return head + ": " + " | ".join(x[:160] for x in keep)
+
+
+def summaries_for_prompt(summaries: list, keep_last: int | None = None, max_chars: int | None = None) -> list:
+    """Run summaries for the iterative_improve prompt.
+
+    Upstream passes run_summaries[:20], i.e. the FIRST 20 entries: after ~19 attempts the LLM no longer saw the
+    outcome of its latest attempts. Kept: the stage-12 summaries (first 20 non-history entries), a one-line digest
+    of older attempts and the last `keep_last` attempts in full, within `max_chars`."""
+    if keep_last is None:
+        keep_last = int(_env("ARC_HISTORY_LAST", "12") or 12)
+    if max_chars is None:
+        max_chars = int(_env("ARC_HISTORY_MAX_CHARS", "40000") or 40000)
+    base = [s for s in summaries if not str(s).startswith(_HISTORY_PREFIX)][:20]
+    hist = [s for s in summaries if str(s).startswith(_HISTORY_PREFIX)]
+    old, recent = hist[:-keep_last] if keep_last > 0 else hist, hist[-keep_last:] if keep_last > 0 else []
+    while recent and sum(len(x) for x in recent) > max_chars:
+        old, recent = old + recent[:1], recent[1:]
+    out = list(base)
+    if old:
+        digest = [_digest(x) for x in old]
+        text = "EARLIER ATTEMPTS (one line each, oldest first; full details only for the most recent ones):\n" + \
+            "\n".join(f"- {d}" for d in digest)
+        if len(text) > max_chars // 2:
+            text = text[: max_chars // 4] + "\n- ...\n" + text[-max_chars // 4:]
+        out.append(text)
+    return out + recent
+

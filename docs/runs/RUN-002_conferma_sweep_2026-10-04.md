@@ -48,3 +48,8 @@ Confronto con la scoperta (semi 0–4): `aggr=max` Δ val +0,103 / Δ test +0,03
 
 ## 5. File di riferimento
 - `sweep_results.json` (tutte le serie per seme), output del terminale incollato nella conversazione.
+
+## 6. Errata (aggiunta dopo RUN-003)
+I Δ sul test (+0,051 per `aggr=max`, +0,056 per `transformer`) sono calcolati rispetto a un `baseline_tuned` misurato dallo sweep (test 0,762). La pipeline, sugli stessi semi 100–109 e con la stessa configurazione, misura 0,80 per quel baseline
+(RUN-003). Lo sweep e `main.py` danno numeri sistematicamente diversi (causa non identificata; unica differenza di codice trovata: `torch.set_num_threads(1)` in `main.py`). Il vantaggio reale sul test è quindi probabilmente più vicino a +0,01…+0,02.
+Il Δ sulla validazione (+0,100) si è invece riprodotto nella pipeline. Test A/B proposto: `RB_SWEEP_THREADS=1`.

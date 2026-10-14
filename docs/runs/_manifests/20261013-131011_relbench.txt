@@ -1,0 +1,9 @@
+date: 2026-10-13T13:10:11+00:00
+command: ./run.sh relbench relbench
+kit: relbench-kit 0.6.3 (2026-10-11): fixes after RUN-007 (stage-13 HTTP 400: repair prompts without vendored code, repair only real failures, LLM errors skip the attempt, cleaner vendoring, recent history, busy-GPU handling); plus 0.6.2
+git: e96ba39 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
+  ARC_DEADLINE_HOURS=24
+  ARC_RUN_STARTED_AT=1791897011

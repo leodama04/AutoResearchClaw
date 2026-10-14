@@ -1,0 +1,7 @@
+date: 2026-10-07T08:53:32+00:00
+command: ./run.sh smoke 
+kit: relbench-kit 0.5.3 (2026-10-07): verified paper repositories, repair fixes, unchanged-candidate rejection, re-check before accepting improvements
+git: e96ba39 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:

@@ -1,0 +1,7 @@
+date: 2026-10-10T13:34:22+00:00
+command: ./run.sh smoke 
+kit: relbench-kit 0.6.2 (2026-10-08): code mode starts from the official model only (no shortcut operators); plus 0.6.1
+git: e96ba39 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 8896 MiB, 32607 MiB
+env:

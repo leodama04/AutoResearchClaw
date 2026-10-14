@@ -229,6 +229,26 @@ class PromptManager:
         if evolution_overlay:
             user_text = f"{user_text}\n\n{evolution_overlay}"
         extra = self._extras.get(stage, "")
+        try:  # ARC patch: knowledge injection
+            from researchclaw.pipeline.stage_impls._arc_knowledge import knowledge_for
+
+            _kn = knowledge_for(stage)
+        except Exception:  # noqa: BLE001
+            _kn = ""
+        if _kn:
+            extra = (extra + "\n\n" if extra else "") + _kn
+        if stage in __import__("os").environ.get(  # ARC patch: ground truth about the method
+            "ARC_METHOD_STAGES",
+            "result_analysis,research_decision,paper_outline,paper_draft,paper_revision,peer_review",
+        ).split(","):
+            try:
+                from researchclaw.pipeline.stage_impls._arc_refine import method_text
+
+                _gt = method_text()
+            except Exception:  # noqa: BLE001
+                _gt = ""
+            if _gt:
+                extra = (extra + "\n\n" if extra else "") + _gt
         if extra:
             user_text = (
                 f"{user_text}\n\n"
@@ -284,6 +304,14 @@ class PromptManager:
                 user_text,
             )
         extra = self._extras.get(name, "")  # ARC patch: extras for sub-prompts
+        try:  # ARC patch: knowledge injection (sub-prompts)
+            from researchclaw.pipeline.stage_impls._arc_knowledge import knowledge_for
+
+            _kn = knowledge_for(name)
+        except Exception:  # noqa: BLE001
+            _kn = ""
+        if _kn:
+            extra = (extra + "\n\n" if extra else "") + _kn
         if extra:
             user_text = (
                 f"{user_text}\n\n"

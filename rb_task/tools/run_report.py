@@ -140,7 +140,7 @@ def main():
     best_overall = []
     for name in passes:
         log = jload(R / name / "refinement_log.json", {})
-        mode = "config" if any("arc_overrides" in (i or {}) for i in log.get("iterations", [])) else "code"
+        mode = "config" if any((i or {}).get("arc_source") for i in log.get("iterations", [])) else "code"
         w(f"### {name}  (mode: {mode}; generated {log.get('generated')})\n")
         w(f"baseline_metric={f4(log.get('baseline_metric'))}, best_metric={f4(log.get('best_metric'))} "
           f"({log.get('best_version')}), stop_reason={log.get('stop_reason')}, iterations={len(log.get('iterations', []))}\n")
@@ -154,10 +154,21 @@ def main():
                     detail += f" — {str(it['arc_rationale'])[:90]}"
             else:
                 detail = "files: " + ", ".join(it.get("files", [])[:7])
+            if it.get("arc_official_code"):
+                detail += f" [official code: {', '.join(it['arc_official_code'])}]"
+            if it.get("arc_recheck"):
+                rc = it["arc_recheck"]
+                detail += f" [re-check seeds+{rc.get('seed_offset')}: {f4(rc.get('first'))} / {f4(rc.get('second'))}]"
             if it.get("arc_rejected"):
                 detail += f" **REJECTED: {it['arc_rejected']}**"
             if it.get("runtime_repaired"):
                 detail += " (runtime-repaired)"
+            if it.get("llm_error"):
+                detail = f"**LLM call failed, attempt skipped: {str(it['llm_error'])[:120]}**"
+            if it.get("repair_llm_error"):
+                detail += f" (repair LLM call failed: {str(it['repair_llm_error'])[:80]})"
+            if "GPU_UNAVAILABLE" in str((it.get("sandbox") or {}).get("stdout", "")):
+                detail += " **GPU occupied by other processes: not evaluated**"
             ns = (sb.get("metrics") or {}).get("proposed_n_seeds")
             if ns is not None:
                 detail += f" [proposed seeds={int(ns)}]"

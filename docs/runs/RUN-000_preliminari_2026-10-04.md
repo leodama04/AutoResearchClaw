@@ -70,9 +70,10 @@ l'unico punto cieco della validazione sono le connessioni residuali.
 
 ## 3. Interpretazione
 - **Dimostrato (entro il rumore):** l'ambiente funziona; il baseline ufficiale è sotto-addestrato; con la ricetta `tuned` l'aggregazione `max` e l'operatore Transformer migliorano nettamente validazione e test (poi confermati in [RUN-002](RUN-002_conferma_sweep_2026-10-04.md)).
-- **Ipotesi:** il disaccordo validazione–test sulle connessioni residuali potrebbe dipendere dal cambio di periodo (validazione 2005–2009, test dal 2010) o dalla dimensione della validazione (≈ 590 righe); non l'ho verificato.
+- **Ipotesi:** il disaccordo validazione–test sulle connessioni residuali potrebbe dipendere dal cambio di periodo (le 40 finestre mensili di validazione coprono 2005-01 → circa 2008-04; quelle di test 2010-01 → circa 2013-04) o dalla dimensione della validazione (≈ 590 righe); non l'ho verificato.
 - **Limiti:** 5 semi per configurazione; la scelta dei due "vincitori" è fatta guardando i risultati (rischio di sovrastima, poi controllato in RUN-002); un solo task e un solo dataset.
 
 ## 4. Errata
 - Il verdetto "validazione = guida debole" stampato dalla prima versione dello strumento di sweep era troppo netto (con 14 configurazioni l'intervallo di confidenza è molto ampio): ora lo strumento riporta l'intervallo e dice "inconcludente".
 - Nella prima descrizione della memoria avevo ipotizzato che crescesse con il prodotto dei vicini per layer; i dati hanno mostrato che dipende dal numero di nodi campionati (ogni layer in più satura il sottografo), da cui il budget di nodi con micro-batch.
+- **Correzione sui periodi (aggiunta dopo la lettura del codice di RelBench):** avevo scritto "validazione 2005–2009". Con `num_eval_timestamps = 40` e finestre di 30 giorni, la validazione copre 2005-01 → circa 2008-04 e il test 2010-01 → circa 2013-04 (`relbench/base/task_base.py`, `_get_table`).

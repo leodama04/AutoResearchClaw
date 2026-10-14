@@ -1,0 +1,9 @@
+date: 2026-10-05T18:34:03+00:00
+command: ./run.sh relbench relbench
+kit: relbench-kit 0.5 (2026-10-05): code mode with implementation cards from full-text papers + official code, project skills, knowledge gate, frozen official baselines, year_min 2010, 24h deadline
+git: e96ba39 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
+  ARC_DEADLINE_HOURS=3
+  ARC_RUN_STARTED_AT=1791225243

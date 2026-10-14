@@ -73,4 +73,9 @@ if C.RECIPE == "tuned":
     print("recipe=tuned: baseline_tuned presente, miglioramenti calcolati anche rispetto a baseline_tuned")
 assert (tmp / "results.json").exists()
 print("parsed metrics:", {k: round(v, 4) for k, v in m.items() if "mean" in k or k == "primary_metric"})
+# controllo "proposed identico al baseline": con override vuoti deve essere 1 (ricetta tuned)
+if C.RECIPE == "tuned":
+    exp_ident = 0.0 if C.PROPOSED_OVERRIDES else 1.0
+    assert m.get("proposed_identical_to_baseline") == exp_ident, (m.get("proposed_identical_to_baseline"), exp_ident)
+    print("proposed_identical_to_baseline =", m.get("proposed_identical_to_baseline"), "(atteso", exp_ident, ")")
 print("SMOKE MAIN PASSED")

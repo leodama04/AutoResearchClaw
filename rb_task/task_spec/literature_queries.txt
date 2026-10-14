@@ -1,0 +1,13 @@
+# OPT-IN ONLY (not used by default since kit 0.6.1): human-written queries added to the LLM's own queries.
+# Enable with ARC_LIT_QUERIES_FILE=/app/rb_task/task_spec/literature_queries.txt ./run.sh relbench. One per line.
+relational deep learning
+RelBench relational databases benchmark
+graph neural network relational database prediction
+heterogeneous graph neural network
+temporal heterogeneous graph neural network
+message passing relational database schema
+graph transformer relational data
+heterogeneous graph transformer
+GraphSAGE inductive representation learning
+graph attention network
+tabular deep learning feature encoding
