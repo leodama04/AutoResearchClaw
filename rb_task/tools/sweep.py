@@ -136,7 +136,7 @@ def report(rows: list) -> dict:
     best_val = max(rows, key=lambda r: r["val_mean"])
     best_test = max(rows, key=lambda r: r["test_mean"])
     base = rows[0]
-    print("\n=== Sweep summary (sorted by validation AUROC) ===")
+    print("\n=== Sweep summary (sorted by the validation metric) ===")
     print(f"{'config':30s} {'val':>16s} {'test':>16s}")
     for r in sorted(rows, key=lambda r: -r["val_mean"]):
         print(f"{r['name']:30s} {r['val_mean']:.4f}±{r['val_std']:.3f}   {r['test_mean']:.4f}±{r['test_std']:.3f}")

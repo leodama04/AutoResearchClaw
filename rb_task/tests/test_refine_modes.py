@@ -126,14 +126,15 @@ print("OK 8: file di conferma con SEED_OFFSET=100")
 
 # 9) memoria tra passate e partenza dal migliore (funzioni pure)
 prev = [{"generated": "1", "iterations": [
-            {"iteration": 1, "metric": 0.80, "arc_overrides": {"aggr": "max"}, "sandbox": {"metrics": {"m": 1}}},
+            {"iteration": 1, "metric": 0.80, "arc_overrides": {"aggr": "max"}, "sandbox": {"metrics": {"m": 1}}, "improved": True},
             {"iteration": 2, "metric": 0.70, "arc_overrides": {"gnn_type": "gin"}},
-            {"iteration": 3, "metric": 0.95, "arc_overrides": {"aggr": "mean"}, "arc_rejected": "exit code 1"}]}]
+            {"iteration": 3, "metric": 0.95, "arc_overrides": {"aggr": "mean"}, "arc_rejected": "exit code 1"},
+            {"iteration": 4, "metric": 0.83, "arc_overrides": {"heads": 8}, "improved": False}]}]  # not accepted (margin)
 class St2(St): prev_logs = prev
 rows = A._evaluated({"iterations": [{"arc_overrides": {"dropout": 0.1}, "metric": 0.75}]}, prev)
-assert [A.canon(r[0]) for r in rows] == [A.canon(x) for x in ({}, {"aggr": "max"}, {"gnn_type": "gin"}, {"aggr": "mean"}, {"dropout": 0.1})]
+assert [A.canon(r[0]) for r in rows] == [A.canon(x) for x in ({}, {"aggr": "max"}, {"gnn_type": "gin"}, {"aggr": "mean"}, {"heads": 8}, {"dropout": 0.1})]
 ws = A.warm_start(St2, {"rb_config.py": CFG}, 0.78, "maximize")
-assert ws and ws["overrides"] == {"aggr": "max"} and ws["metric"] == 0.80                    # il run rifiutato (0.95) NON diventa il migliore
+assert ws and ws["overrides"] == {"aggr": "max"} and ws["metric"] == 0.80                    # ne' il run rifiutato (0.95) ne' quello non accettato (0.83)
 assert ws["record"]["iteration"] == 0 and ws["record"]["arc_carried_from"] and A.read_overrides(ws["files"]["rb_config.py"], "PROPOSED_OVERRIDES") == {"aggr": "max"}
 assert A.warm_start(St2, {"rb_config.py": CFG}, 0.90, "maximize") is None                    # il corrente e' migliore: nessuna partenza
 assert A.warm_start(St2, {"rb_config.py": CFG}, 0.80, "maximize") is not None                # pari (metrica recuperata da upstream): si'
@@ -161,8 +162,8 @@ d = _P(tempfile.mkdtemp()); (d / "stage-13_v1" / "experiment_v2").mkdir(parents=
 (d / "stage-13_v1" / "experiment_v2" / "rb_model.py").write_text("# best model\n")
 (d / "stage-13_v1" / "experiment_v2" / "rb_config.py").write_text(CFG)
 (d / "stage-13_v1" / "refinement_log.json").write_text(json.dumps({"generated": "1", "iterations": [
-    {"iteration": 1, "metric": 0.75, "version_dir": "experiment_v1/"},
-    {"iteration": 2, "metric": 0.82, "version_dir": "experiment_v2/"}]}))
+    {"iteration": 1, "metric": 0.75, "version_dir": "experiment_v1/", "improved": True},
+    {"iteration": 2, "metric": 0.82, "version_dir": "experiment_v2/", "improved": True}]}))
 class St3(St):
     prev_logs = A.previous_passes(d); config_mode = False; mode = "code"
 ws = A.warm_start(St3, {"rb_config.py": CFG, "rb_model.py": "# seed\n"}, 0.78, "maximize")

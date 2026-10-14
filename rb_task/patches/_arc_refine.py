@@ -387,6 +387,16 @@ def guard_candidate(best_files: dict, candidate: dict, space_cfg: dict | None, p
 
 
 # ---------------------------------------------------------------------------------- gate
+def _task():
+    try:
+        from researchclaw.pipeline.stage_impls._arc_knowledge import task_info
+
+        return task_info()
+    except Exception:  # noqa: BLE001
+        return {"dataset": "rel-f1", "task": "driver-top3", "type": "binary classification", "metric": "ROC-AUC",
+                "metric_key": "roc_auc", "higher": True}
+
+
 def expected_from_stage12(run_dir: Path) -> dict:
     """Seed count / conditions / noise level of the reference run (stage 12)."""
     try:
@@ -395,7 +405,7 @@ def expected_from_stage12(run_dir: Path) -> dict:
         return {}
     conds = sorted(k[: -len("_n_seeds")] for k in m if k.endswith("_n_seeds"))
     n = m.get("proposed_n_seeds")
-    std = m.get("proposed_val_roc_auc_std")
+    std = m.get(f"proposed_val_{_task()['metric_key']}_std")
     se = float(std) / math.sqrt(float(n)) if n and std else None
     return {"seeds": int(n) if n else None, "conditions": conds, "se": se}
 
@@ -479,7 +489,7 @@ def _evaluated(log: dict, prev_logs: list | None = None) -> list[tuple[dict, flo
 
 
 def warm_start(state: "ModeState", best_files: dict, best_metric, direction: str = "maximize") -> dict | None:
-    """Start this pass from the best configuration found by earlier passes (if it beats the current best)."""
+    """Start this pass from the best ACCEPTED version of earlier passes (if it is at least as good as the current best)."""
     cfile, var = state.space["config_file"], state.space["variable"]
     best_rec, best_val = None, None
     best_dir = None
@@ -487,6 +497,10 @@ def warm_start(state: "ModeState", best_files: dict, best_metric, direction: str
         for it in L.get("iterations", []):
             m = it.get("metric") if isinstance(it, dict) else None
             if not isinstance(m, (int, float)) or it.get("arc_rejected") or it.get("arc_carried_from"):
+                continue
+            # only versions that were ACCEPTED as a new best (noise margin + re-check on other seeds). RUN-008: the best
+            # metric of ANY attempt was used, so pass 2 started from a single, never re-checked run (test 0.742).
+            if not it.get("improved") and _env("ARC_WARM_START_ANY") != "1":
                 continue
             if state.config_mode and "arc_overrides" not in it:
                 continue
@@ -573,8 +587,10 @@ def build_proposal_prompt(space_cfg, rows, best, best_metric, baseline_metric, e
     )
     user = (
         f"Topic: {topic}\n\n"
-        "Goal: improve a graph neural network on RelBench rel-f1 / driver-top3 (binary classification). Metric: validation "
-        f"ROC-AUC averaged over {seeds} seeds, HIGHER is better. The training recipe is fixed; you only choose "
+        f"Goal: improve a graph neural network on RelBench {_task()['dataset']} / {_task()['task']} ({_task()['type']}). "
+        f"Metric: validation {_task()['metric']} averaged over {seeds} seeds; the numbers below are primary_metric values, "
+        f"HIGHER is better{'' if _task()['higher'] else ' (primary_metric = -' + _task()['metric'] + ')'}. "
+        "The training recipe is fixed; you only choose "
         "architecture settings.\n"
         f"Noise: {noise}a candidate is accepted as an improvement only if it beats the best so far by at least {margin:.3f}.\n\n"
         "SEARCH SPACE (key: allowed values -- meaning). The defaults are the official GraphSAGE setup: "
@@ -736,10 +752,12 @@ def confirm(state: ModeState, config, stage_dir: Path, best_files: dict, best_ve
                     it[key]["metrics"].update(extra)
     m = res.metrics or {}
     lines = [f"# Confirmation on fresh seeds (offset {state.confirm_offset})", "",
-             "These seeds were never used to choose anything.", "", "| condition | val AUROC | test AUROC |", "|---|---|---|"]
+             "These seeds were never used to choose anything.", "",
+             f"| condition | val {_task()['metric']} | test {_task()['metric']} |", "|---|---|---|"]
+    mk = _task()["metric_key"]
     for cond in sorted(k[: -len("_n_seeds")] for k in m if k.endswith("_n_seeds")):
-        lines.append(f"| {cond} | {m.get(cond + '_val_roc_auc_mean', float('nan')):.4f} ± {m.get(cond + '_val_roc_auc_std', float('nan')):.4f} "
-                     f"| {m.get(cond + '_test_roc_auc_mean', float('nan')):.4f} ± {m.get(cond + '_test_roc_auc_std', float('nan')):.4f} |")
+        lines.append(f"| {cond} | {m.get(f'{cond}_val_{mk}_mean', float('nan')):.4f} ± {m.get(f'{cond}_val_{mk}_std', float('nan')):.4f} "
+                     f"| {m.get(f'{cond}_test_{mk}_mean', float('nan')):.4f} ± {m.get(f'{cond}_test_{mk}_std', float('nan')):.4f} |")
     (Path(stage_dir) / "confirmation.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     logger.warning("Stage 13: confirmation done -> %s", (Path(stage_dir) / "confirmation.md"))
 
@@ -747,8 +765,11 @@ def confirm(state: ModeState, config, stage_dir: Path, best_files: dict, best_ve
 # =====================================================================================================
 # Ground truth about the evaluated method + paired statistics (used by the analysis / paper stages)
 # =====================================================================================================
-def paired_stats(results: list[dict], a: str, b: str, key: str) -> dict | None:
-    """Paired comparison of condition `a` minus `b` over common seeds (exact sign-flip test, bootstrap CI)."""
+def paired_stats(results: list[dict], a: str, b: str, key: str, higher: bool | None = None) -> dict | None:
+    """Paired comparison of condition `a` minus `b` over common seeds (exact sign-flip test, bootstrap CI).
+    `seeds_better` counts the seeds where `a` is better (higher, or lower for an error metric such as MAE)."""
+    if higher is None:
+        higher = bool(_task().get("higher", True))
     import itertools
 
     import numpy as np
@@ -770,7 +791,7 @@ def paired_stats(results: list[dict], a: str, b: str, key: str) -> dict | None:
     boots = np.array([d[rng.integers(0, n, n)].mean() for _ in range(10000)])
     lo, hi = np.percentile(boots, [2.5, 97.5])
     return {"n": n, "mean_diff": mean, "se": se, "ci95": [float(lo), float(hi)], "p_signflip": p,
-            "seeds_better": int((d > 0).sum())}
+            "seeds_better": int((d > 0).sum() if higher else (d < 0).sum())}
 
 
 def _code_changes(files: dict) -> str:
@@ -828,11 +849,12 @@ def write_method_file(state: ModeState, best_files: dict, best_version: str, log
           "`baseline_tuned` = the same official architecture with a better recipe (batch size 128, i.e. 4x more optimiser updates); "
           "`proposed` = `baseline_tuned` + the changes above (same recipe as `baseline_tuned`).",
           f"Search procedure: sequential search over architecture settings proposed by an LLM and executed automatically; {n_eval} "
-          f"configurations evaluated ({len(valid)} valid), selection metric = validation ROC-AUC averaged over seeds. The test split "
+          f"configurations evaluated ({len(valid)} valid), selection metric = validation {_task()['metric']} averaged over seeds. The test split "
           "was never used for selection. The search space is in `search_space.json` (operator, depth, width, aggregation, dropout, "
           "residual / jumping knowledge, encoder depth/width/dropout, time encoding, readout depth).", ""]
     if valid:
-        L.append("Evaluated configurations (validation ROC-AUC of `proposed`, mean over seeds):")
+        L.append(f"Evaluated configurations (primary_metric = validation {_task()['metric']} of `proposed`, mean over seeds"
+                 f"{'' if _task()['higher'] else ', sign flipped'}):")
         for o, m in sorted(valid, key=lambda x: -x[1])[:12]:
             L.append(f"- {json.dumps(o, sort_keys=True)}: {m:.4f}")
         L.append("")
@@ -840,8 +862,9 @@ def write_method_file(state: ModeState, best_files: dict, best_version: str, log
         m = conf_info["metrics"]
         L.append(f"CONFIRMATION on fresh seeds (offset {conf_info['seed_offset']}, never used for selection) - the numbers to report:")
         for c in sorted(k[: -len("_n_seeds")] for k in m if k.endswith("_n_seeds")):
-            L.append(f"- {c}: val ROC-AUC {m.get(c + '_val_roc_auc_mean', float('nan')):.4f} +/- {m.get(c + '_val_roc_auc_std', float('nan')):.4f}, "
-                     f"test ROC-AUC {m.get(c + '_test_roc_auc_mean', float('nan')):.4f} +/- {m.get(c + '_test_roc_auc_std', float('nan')):.4f} "
+            mk, mn = _task()["metric_key"], _task()["metric"]
+            L.append(f"- {c}: val {mn} {m.get(f'{c}_val_{mk}_mean', float('nan')):.4f} +/- {m.get(f'{c}_val_{mk}_std', float('nan')):.4f}, "
+                     f"test {mn} {m.get(f'{c}_test_{mk}_mean', float('nan')):.4f} +/- {m.get(f'{c}_test_{mk}_std', float('nan')):.4f} "
                      f"({int(m[c + '_n_seeds'])} seeds)")
         for a, b in (("proposed", "baseline_tuned"), ("proposed", "baseline_graphsage"), ("baseline_tuned", "baseline_graphsage")):
             for key, name in (("val", "validation"), ("test", "test")):
@@ -855,7 +878,7 @@ def write_method_file(state: ModeState, best_files: dict, best_version: str, log
           "never implemented - ignore them. Report the confirmation numbers (not only the best search run), state which differences are "
           "statistically supported and which are not, and note that the official baseline is under-trained, so most of the gain over it "
           "comes from the training recipe (`baseline_tuned`), not from the architecture. Validation and test are single splits of one "
-          "dataset: do not generalise beyond rel-f1 / driver-top3."]
+          f"dataset: do not generalise beyond {_task()['dataset']} / {_task()['task']}."]
     try:
         Path(path).write_text("\n".join(L) + "\n", encoding="utf-8")
     except OSError:

@@ -164,6 +164,12 @@ def _task_spec_suffix() -> str:
         text = Path(path).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+    try:  # the spec is a template: fill in the task of this run (RB_TASK)
+        from researchclaw.pipeline.stage_impls._arc_knowledge import render_task_text
+
+        text = render_task_text(text)
+    except Exception:  # noqa: BLE001
+        pass
     return f"\n\n=== TASK SPECIFICATION (authoritative) ===\n{text}" if text else ""
 
 

@@ -49,10 +49,11 @@ BASELINE = {
     "heads": 4,
 }
 
-# Training recipe. "official" = the RelBench example settings: 1353 examples / batch 512 = 3 optimiser steps
-# per epoch -> only 30 updates in total (under-trained: validation AUROC is bimodal across seeds).
+# Training recipe. "official" = the RelBench example settings (10 epochs, batch 512). Measured on driver-top3:
+# 1353 examples / batch 512 = 3 optimiser steps per epoch -> only 30 updates in total (under-trained: validation AUROC
+# is bimodal across seeds).
 # "tuned" = same architecture and optimiser, batch_size 128 (4x more updates), chosen with `./run.sh sweep`
-# (val AUROC 0.768 vs 0.694, 1 GB peak, 3 s/run). With "tuned" a third condition, `baseline_tuned`, is added so
+# (driver-top3: val AUROC 0.768 vs 0.694, 1 GB peak, 3 s/run). With "tuned" a third condition, `baseline_tuned`, is added so
 # that gains of `proposed` can be attributed to ARCHITECTURE and not to simply training longer; the recipe is
 # then FIXED (the refinement may only change the architecture). Set with the env var RB_RECIPE.
 RECIPE = os.environ.get("RB_RECIPE", "official")

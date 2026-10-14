@@ -206,6 +206,12 @@ class PromptManager:
                         stage, candidate, exc,
                     )
                     continue
+            try:  # ARC patch: task templates
+                from researchclaw.pipeline.stage_impls._arc_knowledge import render_task_text
+
+                text = render_task_text(text)
+            except Exception:  # noqa: BLE001
+                pass
             self._extras[stage] = text
             logger.info("Loaded extra prompt for stage %r (%d chars)", stage, len(text))
 

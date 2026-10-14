@@ -15,6 +15,16 @@ import sys
 from pathlib import Path
 
 
+
+def metric_of(m: dict) -> tuple[str, str]:
+    """(key, label) of the task metric from metric names such as proposed_val_roc_auc_mean / proposed_val_mae_mean."""
+    for k in m or {}:
+        mm = re.match(r"^\w+?_val_(\w+)_mean$", k)
+        if mm and not k.startswith("confirm_"):
+            key = mm.group(1)
+            return key, {"roc_auc": "ROC-AUC", "mae": "MAE"}.get(key, key)
+    return "roc_auc", "ROC-AUC"
+
 def jload(path, default=None):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
@@ -125,10 +135,11 @@ def main():
     conds = sorted(k[: -len("_n_seeds")] for k in m if k.endswith("_n_seeds"))
     if conds:
         w(f"status={r1.get('status')}, elapsed={round(r1.get('elapsed_sec', 0))} s, peak GPU memory {f4(m.get('peak_gpu_mem_gb'))} GB\n")
-        w("| condition | seeds | val ROC-AUC | test ROC-AUC |\n|---|---|---|---|")
+        mk, ml = metric_of(m)
+        w(f"| condition | seeds | val {ml} | test {ml} |\n|---|---|---|---|")
         for c in conds:
-            w(f"| {c} | {int(m[c + '_n_seeds'])} | {f4(m.get(c + '_val_roc_auc_mean'))} ± {f4(m.get(c + '_val_roc_auc_std'))} "
-              f"| {f4(m.get(c + '_test_roc_auc_mean'))} ± {f4(m.get(c + '_test_roc_auc_std'))} |")
+            w(f"| {c} | {int(m[c + '_n_seeds'])} | {f4(m.get(f'{c}_val_{mk}_mean'))} ± {f4(m.get(f'{c}_val_{mk}_std'))} "
+              f"| {f4(m.get(f'{c}_test_{mk}_mean'))} ± {f4(m.get(f'{c}_test_{mk}_std'))} |")
         w(f"\nprimary_metric (selection metric) = {f4(m.get('primary_metric'))}")
     else:
         w("No per-condition metrics found in stage-12/runs/run-1.json.")
@@ -187,10 +198,11 @@ def main():
             w(f"\n### Confirmation on fresh seeds ({name}/confirmation.json)\n")
             cm = cj.get("metrics") or {}
             w(f"seed offset {cj.get('seed_offset')}, valid={cj.get('valid')}, rc={cj.get('returncode')}\n")
-            w("| condition | val ROC-AUC | test ROC-AUC |\n|---|---|---|")
+            mk, ml = metric_of(cm)
+            w(f"| condition | val {ml} | test {ml} |\n|---|---|---|")
             for c in sorted(k[: -len('_n_seeds')] for k in cm if k.endswith('_n_seeds')):
-                w(f"| {c} | {f4(cm.get(c + '_val_roc_auc_mean'))} ± {f4(cm.get(c + '_val_roc_auc_std'))} "
-                  f"| {f4(cm.get(c + '_test_roc_auc_mean'))} ± {f4(cm.get(c + '_test_roc_auc_std'))} |")
+                w(f"| {c} | {f4(cm.get(f'{c}_val_{mk}_mean'))} ± {f4(cm.get(f'{c}_val_{mk}_std'))} "
+                  f"| {f4(cm.get(f'{c}_test_{mk}_mean'))} ± {f4(cm.get(f'{c}_test_{mk}_std'))} |")
 
     # ------------------------------------------------------------------ analysis / paper
     w("\n## 4. Analysis, paper and checks\n")

@@ -314,7 +314,8 @@ def select_papers(shortlist: list[dict], repos: list[dict], k: int, llm, chat, t
         system = "You select research papers for an engineer who must IMPLEMENT model improvements. Reply with JSON only."
         user = (f"Topic: {topic}\n\nThe engineer will modify a heterogeneous GNN (the official RelBench RDL model: "
                 "PyTorch-Frame column encoders + relative-time encoding + GraphSAGE message passing over the database "
-                "graph + MLP head) to improve ROC-AUC on RelBench rel-f1 / driver-top3.\n\nCandidate papers:\n"
+                f"graph + MLP head) to improve {task_info()['metric']} on RelBench {task_info()['dataset']} / "
+                f"{task_info()['task']}.\n\nCandidate papers:\n"
                 + "\n".join(rows)
                 + f"\n\nPick up to {k} papers whose METHODS contain concrete, implementable components for that model "
                   "(concrete, implementable model components), preferring papers whose "
@@ -541,6 +542,61 @@ def code_map(files: dict) -> str:
         if items:
             out.append(f"- `{name}` -> `from {mod} import ...`\n" + "\n".join(items[:12]))
     return "\n".join(out)
+
+
+# ============================================================================ task (RB_DATASET / RB_TASK)
+# Facts from relbench 1.1.0 (relbench/tasks/f1.py, relbench/datasets/f1.py). The task specs (rb_task/task_spec/*.md) are
+# templates: {{TASK}}, {{METRIC}}, ... are filled from here, so the same kit runs on another task with RB_TASK=...
+_TASKS = {
+    ("rel-f1", "driver-top3"): {"type": "binary classification", "entity": "drivers", "target": "qualifying",
+                                "desc": "will a driver qualify in the top 3 for a race within the next month (30 days)",
+                                "metric": "ROC-AUC", "metric_key": "roc_auc", "higher": True},
+    ("rel-f1", "driver-dnf"): {"type": "binary classification", "entity": "drivers", "target": "did_not_finish",
+                               "desc": "will a driver not finish (DNF) a race within the next month (30 days)",
+                               "metric": "ROC-AUC", "metric_key": "roc_auc", "higher": True},
+    ("rel-f1", "driver-position"): {"type": "regression", "entity": "drivers", "target": "position",
+                                    "desc": "average finishing position of a driver over all races in the next 2 months (60 days)",
+                                    "metric": "MAE", "metric_key": "mae", "higher": False},
+}
+_SPLITS = {"rel-f1": "validation windows from 2005-01-01, test windows from 2010-01-01"}
+
+
+def known_tasks() -> list[str]:
+    return [f"{d}/{t}" for d, t in _TASKS]
+
+
+def task_info() -> dict:
+    """The task this run works on (env RB_DATASET / RB_TASK, default rel-f1 / driver-top3)."""
+    dataset, task = _env("RB_DATASET", "rel-f1") or "rel-f1", _env("RB_TASK", "driver-top3") or "driver-top3"
+    info = dict(_TASKS.get((dataset, task)) or {
+        "type": "RelBench entity task", "entity": "?", "target": "?", "desc": "see the RelBench task definition",
+        "metric": _env("RB_METRIC_NAME", "the task metric"), "metric_key": _env("RB_METRIC_KEY", "roc_auc"),
+        "higher": _env("RB_METRIC_HIGHER", "1") == "1"})
+    info.update(dataset=dataset, task=task, known=(dataset, task) in _TASKS,
+                splits=_SPLITS.get(dataset, "temporal validation and test windows of the RelBench task"))
+    info["metric_dir"] = "higher is better" if info["higher"] else "lower is better"
+    info["primary_sign"] = "" if info["higher"] else (
+        f" with the sign flipped (primary_metric = -{info['metric']}, so a HIGHER primary_metric is still better)")
+    return info
+
+
+def render_task_text(text: str) -> str:
+    """Fill the task placeholders of a spec template and keep only the blocks written for this task
+    (<!-- only:driver-top3 --> ... <!-- /only -->: facts measured on that task)."""
+    if not text or ("{{" not in text and "<!-- only:" not in text):
+        return text
+    ti = task_info()
+
+    def _only(m: "re.Match[str]") -> str:
+        return m.group(2) if ti["task"] in [x.strip() for x in m.group(1).split(",")] else ""
+
+    text = re.sub(r"<!-- only:([^>]+?) -->(.*?)<!-- /only -->", _only, text, flags=re.DOTALL)
+    for key, val in (("DATASET", ti["dataset"]), ("TASK_TYPE", ti["type"]), ("TASK_DESC", ti["desc"]), ("TASK", ti["task"]),
+                     ("ENTITY", ti["entity"]), ("TARGET", ti["target"]), ("METRIC_KEY", ti["metric_key"]),
+                     ("METRIC_DIR", ti["metric_dir"]), ("METRIC", ti["metric"]), ("SPLITS", ti["splits"]),
+                     ("PRIMARY_SIGN", ti["primary_sign"])):
+        text = text.replace("{{" + key + "}}", str(val))
+    return text
 
 
 def hidden_file(name: str) -> bool:

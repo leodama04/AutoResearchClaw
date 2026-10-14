@@ -1,1 +1,1 @@
-relbench-kit 0.6.3 (2026-10-11): fixes after RUN-007 (stage-13 HTTP 400: repair prompts without vendored code, repair only real failures, LLM errors skip the attempt, cleaner vendoring, recent history, busy-GPU handling); plus 0.6.2
+relbench-kit 0.6.4 (2026-10-14): warm start between passes only from accepted versions; task configurable with RB_TASK (driver-top3, driver-dnf, driver-position: specs are templates); RelGNN checkpoint evaluation tool; plus 0.6.3

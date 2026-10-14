@@ -2,9 +2,9 @@
 
 ## Study
 Improve the official RelBench GNN ("RDL": PyTorch-Frame column encoders + relative-time encoding + heterogeneous
-GraphSAGE message passing + MLP head) on RelBench 1.1.0, dataset `rel-f1`, task `driver-top3` (binary classification:
-will a driver qualify in the top 3 within the next 30 days). Metric ROC-AUC (higher is better). Temporal splits:
-validation windows from 2005-01-01, test windows from 2010-01-01.
+GraphSAGE message passing + MLP head) on RelBench 1.1.0, dataset `{{DATASET}}`, task `{{TASK}}` ({{TASK_TYPE}}:
+{{TASK_DESC}}). Metric {{METRIC}} ({{METRIC_DIR}}). Temporal splits:
+{{SPLITS}}.
 
 ## How the refinement works in CODE MODE
 You write code. YOU decide, from the papers you found and read, which architecture to try. In every attempt implement
@@ -41,8 +41,8 @@ ONE idea taken from the implementation cards of the knowledge file
 `proposed` (= `baseline_tuned` + your change). 10 seeds each; the training recipe is fixed.
 
 ## Protocol (non-negotiable)
-- `primary_metric` = mean VALIDATION ROC-AUC of `proposed` over seeds. Selection uses validation only.
-- Test ROC-AUC is computed once per trained model and only reported; it is hidden from you during refinement.
+- `primary_metric` = mean VALIDATION {{METRIC}} of `proposed` over seeds{{PRIMARY_SIGN}}. Selection uses validation only.
+- Test {{METRIC}} is computed once per trained model and only reported; it is hidden from you during refinement.
 - An attempt counts only if the whole project runs to completion (exit code 0) with every condition and every seed.
 - At the end the best model is re-evaluated on fresh seeds (`confirm_*` metrics).
 

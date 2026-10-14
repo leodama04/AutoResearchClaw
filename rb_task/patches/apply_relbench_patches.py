@@ -45,6 +45,8 @@ Run from the repo root:   python3 rb_task/patches/apply_relbench_patches.py
    exceeded the context -> HTTP 400 -> stage failed); runtime repair only for real failures (not stderr warnings); an LLM
    error skips the attempt instead of failing the stage; the improve prompt shows the most recent attempts (upstream:
    run_summaries[:20]); the LLM client logs the body of HTTP 400 answers.
+11. 0.6.4: the task specs are templates filled from RB_DATASET / RB_TASK (driver-top3, driver-dnf, driver-position);
+   warm start between passes only from ACCEPTED versions.
 
 Idempotent. Backups are written as *.bak.
 """
@@ -593,6 +595,19 @@ N5_NEW = ("                    if not _transient_400:\n"
           "                        raise  # Genuine bad request — don't retry\n")
 
 
+# ---------------------------------------------------------------------------------------------- 0.6.4
+# T1. The task specs (rb_task/task_spec/*.md, loaded through prompts.extra_prompts) are templates: the task of the run
+#     (RB_DATASET / RB_TASK) is filled in when they are read, so the same kit runs on driver-dnf or driver-position.
+T1_OLD = "            self._extras[stage] = text\n"
+T1_NEW = ("            try:  # ARC patch: task templates\n"
+          "                from researchclaw.pipeline.stage_impls._arc_knowledge import render_task_text\n"
+          "\n"
+          "                text = render_task_text(text)\n"
+          "            except Exception:  # noqa: BLE001\n"
+          "                pass\n"
+          "            self._extras[stage] = text\n")
+
+
 def patch(path: Path, pairs, marker: str) -> bool:
     if not path.is_file():
         print(f"ERRORE: non trovo {path}. Lancialo dalla root del repo.", file=sys.stderr)
@@ -653,6 +668,7 @@ def main() -> int:
     ok = patch(EXECUTION, [(H3_OLD, H3_NEW)], "ARC patch: hide prefixes") and ok
     ok = patch(EXECUTION, EXEC_063, "ARC patch: repair prompt files") and ok
     ok = patch(CLIENT, [(N5_OLD, N5_NEW)], "ARC patch: log 400 body") and ok
+    ok = patch(MANAGER, [(T1_OLD, T1_NEW)], "ARC patch: task templates") and ok
     if KNOW_SRC.is_file():
         shutil.copy2(KNOW_SRC, KNOW_DST)
         print(f"[copiato]        {KNOW_DST.relative_to(ROOT)}")

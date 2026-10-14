@@ -2,6 +2,26 @@
 
 Ogni run cita la versione del kit usata (`rb_task/VERSION`). Le patch al codice della pipeline si applicano con `python3 rb_task/patches/apply_relbench_patches.py` (idempotente, crea `.bak`).
 
+## 0.6.4 — 2026-10-14 (dopo RUN-008)
+Due modifiche al comportamento, decise dopo RUN-008; nient'altro cambia in cio' che Qwen vede o sceglie.
+- **Ripartenza tra le passate solo da versioni accettate.** Prima la passata successiva partiva dal tentativo con la metrica
+  piu' alta, anche se non aveva superato il margine e il ricontrollo: in RUN-008 la passata 2 e' partita dal tentativo 31
+  (una sola esecuzione, test 0,742) e la sua conferma e' stata la peggiore (test 0,720). Ora conta solo `improved=True`;
+  sui dati di RUN-008 la passata 2 sarebbe partita dal tentativo 19 (0,8787), la versione accettata.
+  `ARC_WARM_START_ANY=1` ripristina il comportamento precedente.
+- **Task configurabile con `RB_TASK`** (`driver-top3`, `driver-dnf`, `driver-position`). Prima "driver-top3", "ROC-AUC" e la
+  descrizione del task erano scritti a mano nelle specifiche, nel topic, nel prompt di scelta dei paper, nella proposta in
+  modalita' configurazioni e nel file del metodo. Ora le specifiche (`rb_task/task_spec/*.md`) sono modelli (`{{TASK}}`,
+  `{{METRIC}}`, ...) riempiti dal registro dei task (fatti di relbench 1.1.0) quando vengono letti; i fatti misurati solo su
+  driver-top3 compaiono solo per driver-top3. Per `driver-top3` il testo resta quello di prima, tranne la frase che
+  descrive il task e gli split (verificato con un diff). Per una metrica d'errore (MAE di driver-position) tabelle di conferma, statistiche appaiate
+  ("meglio" = piu' basso) e file del metodo usano la metrica giusta; `primary_metric` resta "piu' alto e' meglio" (= -MAE).
+- **Nuovo strumento `./run.sh relgnn-ckpt`** (`rb_task/tools/relgnn_checkpoint_eval.py`): valuta i checkpoint ufficiali di
+  RelGNN (Hugging Face `tianlangchen/RelGNN`) sui task di rel-f1 con il nostro codice dei dati, la configurazione degli autori
+  per task e il loro loader, senza addestramento; confronta con i valori del paper. Richiesto dal correlatore.
+- `run.sh` e `docker-entrypoint.sh` di nuovo eseguibili nello zip (nello zip 0.6.3 erano salvati senza permesso di esecuzione).
+- Test: `test_fixes_064.py`, `test_relgnn_checkpoint_eval.py`; aggiornati i casi di ripartenza in `test_refine_modes.py`.
+
 ## 0.6.3 — 2026-10-11 (correzioni dopo RUN-007: stage 13 fallito con HTTP 400)
 Solo correzioni di difetti: nulla cambia in cio' che viene detto a Qwen su paper e architetture.
 - **Causa del fallimento:** i prompt di riparazione dello stage 13 (`iterative_repair`) contenevano TUTTI i file del progetto, codice

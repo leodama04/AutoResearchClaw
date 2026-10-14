@@ -16,7 +16,9 @@
 #     RB_SWEEP_MODE=arch RB_SWEEP_ONLY="aggr=max,transformer" RB_SWEEP_SEEDS=10 RB_SWEEP_SEED_OFFSET=100 ./run.sh sweep
 #                                         (conferma dei vincitori su semi NUOVI; RB_SHOW_WARNINGS=1 per vedere i warning)
 #     ./run.sh report artifacts/rc-XXXX [NOME]   (rapporto automatico di una run in docs/runs/)
+#     ./run.sh relgnn-ckpt [--tasks ...]  (checkpoint ufficiali di RelGNN valutati con il nostro codice, senza addestramento)
 #     ARC_DEADLINE_HOURS=24 ./run.sh relbench   (pipeline completa, MODALITA' CODICE con schede dai paper; ARC_SEARCH_MODE=config per la ricerca a configurazioni)
+#     RB_TASK=driver-dnf ARC_DEADLINE_HOURS=24 ./run.sh relbench   (stessa pipeline su un altro task di rel-f1: driver-dnf, driver-position)
 #                                         (si ferma subito se la GPU ha meno di RB_PREFLIGHT_MIN_FREE_GB=27.5 GB liberi; RB_SKIP_GPU_CHECK=1 per saltare)
 set -euo pipefail
 
@@ -100,7 +102,14 @@ docker_run() {
         "$IMAGE" "$@"
 }
 
-DEFAULT_RB_TOPIC="Improving graph neural networks for relational deep learning on RelBench: architecture and feature-encoding modifications of the official GraphSAGE baseline on rel-f1 driver-top3 (binary classification)"
+# Task of the run: RB_DATASET / RB_TASK (default rel-f1 / driver-top3). The task specs are templates filled from these.
+RB_TASK_NAME="${RB_TASK:-driver-top3}"
+case "$RB_TASK_NAME" in
+    driver-top3|driver-dnf) RB_TASK_KIND="binary classification" ;;
+    driver-position)        RB_TASK_KIND="regression" ;;
+    *)                      RB_TASK_KIND="RelBench entity task" ;;
+esac
+DEFAULT_RB_TOPIC="Improving graph neural networks for relational deep learning on RelBench: architecture and feature-encoding modifications of the official GraphSAGE baseline on ${RB_DATASET:-rel-f1} ${RB_TASK_NAME} (${RB_TASK_KIND})"
 
 case "${1:-}" in
     build)
@@ -180,6 +189,17 @@ case "${1:-}" in
         fi
         docker_run bash -c 'cd /app && RB_SEED_DIR=/app/rb_task/seed_project python3 rb_task/tools/sweep.py 2>&1 | if [ "${RB_SHOW_WARNINGS:-0}" = 1 ]; then cat; else grep -vE "^\s+epoch=|Embedding raw data|UserWarning|ser = pd.to_datetime|^\s+warnings\.warn\("; fi'
         ;;
+    relgnn-ckpt)
+        # Checkpoint UFFICIALI di RelGNN (Hugging Face) valutati con il nostro codice dei dati, senza addestramento:
+        #   ./run.sh relgnn-ckpt                         (driver-top3, driver-dnf, driver-position)
+        #   ./run.sh relgnn-ckpt --tasks driver-top3 --seeds 0,1,2,3,4
+        # Scarica i checkpoint in artifacts/relgnn_checkpoints/ e scrive artifacts/relgnn_checkpoint_eval_<data>.md/.json
+        write_manifest relgnn-ckpt "$@"
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        shift
+        docker_run bash -c 'cd /app && python3 rb_task/tools/relgnn_checkpoint_eval.py "$@" 2>&1 | grep -vE "Embedding raw data|UserWarning|warnings.warn|ser = pd.to_datetime"' _ "$@"
+        ;;
     report)
         # ./run.sh report artifacts/rc-XXXX [NOME]   -> docs/runs/<NOME>_auto.md (fatti letti dai file della run)
         RUN_DIR="${2:?uso: ./run.sh report <cartella-della-run> [nome]}"
@@ -193,6 +213,11 @@ case "${1:-}" in
         #   ARC_DEADLINE_HOURS=24 ./run.sh relbench        (default 24; stage 13 stops ~75 min before the deadline)
         #   ARC_DEADLINE_HOURS=3  ./run.sh relbench        (short test first!)
         MODE="${ARC_SEARCH_MODE:-code}"
+        case "${RB_DATASET:-rel-f1}/$RB_TASK_NAME" in
+            rel-f1/driver-top3|rel-f1/driver-dnf|rel-f1/driver-position) ;;
+            *) echo "ATTENZIONE: ${RB_DATASET:-rel-f1}/$RB_TASK_NAME non e' nel registro dei task del kit: la specifica mostrera' a Qwen una descrizione generica." >&2 ;;
+        esac
+        echo "[task] ${RB_DATASET:-rel-f1} / $RB_TASK_NAME ($RB_TASK_KIND)" >&2
         gpu_preflight
         export ARC_RUN_STARTED_AT="$(date +%s)"
         write_manifest relbench "$@"
@@ -246,7 +271,7 @@ case "${1:-}" in
             --topic "$TOPIC" --auto-approve
         ;;
     *)
-        echo "Uso: $0 {build|run \"<topic>\"|shell|exec <cmd...>|build-relbench|smoke|baseline|vram|sweep|report <run_dir> [nome]|relbench [\"<topic>\"]}" >&2
+        echo "Uso: $0 {build|run \"<topic>\"|shell|exec <cmd...>|build-relbench|smoke|baseline|vram|sweep|relgnn-ckpt [opzioni]|report <run_dir> [nome]|relbench [\"<topic>\"]}" >&2
         exit 1
         ;;
 esac

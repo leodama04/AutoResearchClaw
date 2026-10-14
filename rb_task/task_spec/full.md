@@ -1,10 +1,10 @@
 ## TASK SPECIFICATION (authoritative - overrides any conflicting default guidance above)
 
 ### Study
-Improve an existing graph neural network on a RelBench v1 task. Dataset `rel-f1`, task `driver-top3`:
-binary classification - will a driver qualify in the top 3 in a race within the next 30 days
-(entity table `drivers`, time column `date`, target `qualifying`). Metric: ROC-AUC (`roc_auc`).
-Temporal splits: validation from 2005-01-01, test from 2010-01-01. RelBench version 1.1.0.
+Improve an existing graph neural network on a RelBench v1 task. Dataset `{{DATASET}}`, task `{{TASK}}`:
+{{TASK_TYPE}} - {{TASK_DESC}}
+(entity table `{{ENTITY}}`, target `{{TARGET}}`). Metric: {{METRIC}} (`{{METRIC_KEY}}`, {{METRIC_DIR}}).
+Temporal splits: {{SPLITS}}. RelBench version 1.1.0.
 The starting point is the OFFICIAL RelBench GNN (heterogeneous GraphSAGE over the relational
 database graph, PyTorch Frame feature encoders, relative-time encoder, MLP head).
 
@@ -35,8 +35,8 @@ re-evaluated on fresh seeds (`confirm_*` metrics) that were never used to choose
 ### Conditions (names are fixed)
 `baseline_graphsage` (official RelBench GraphSAGE, official recipe) and `proposed` (current best variant). When
 `rb_config.RECIPE == "tuned"` there is a third condition, `baseline_tuned`: the SAME official architecture trained with a
-better recipe (batch_size 128). Measured on rel-f1/driver-top3: the official recipe is under-trained (only 30 optimiser
-updates), so simply training longer already raises the validation AUROC from ~0.69 to ~0.77. With the tuned recipe the
+better recipe (batch_size 128).<!-- only:driver-top3 --> Measured on rel-f1/driver-top3: the official recipe is under-trained (only 30 optimiser
+updates), so simply training longer already raises the validation AUROC from ~0.69 to ~0.77.<!-- /only --> With the tuned recipe the
 TRAINING RECIPE IS FIXED: do NOT change lr, epochs, batch_size, weight_decay, num_neighbors, temporal_strategy or
 max_fanout_product -- only the architecture (layers, channels, aggregation, GNN operator, normalisation, dropout,
 residual connections, feature/column encoders, temporal encoding, readout head, forward pass). `proposed` starts
@@ -50,7 +50,7 @@ In the experiment plan list exactly the conditions `baseline_graphsage` and `pro
 1. Fit on the train table; select the best epoch/hyper-parameters ONLY with the VALIDATION metric.
 2. The test metric is computed once per trained model from the validation-selected checkpoint and is
    REPORTED ONLY. Never use it (or the test table labels) to choose anything.
-3. `primary_metric` = mean validation ROC-AUC of the `proposed` condition over seeds (higher is
+3. `primary_metric` = mean validation {{METRIC}} of the `proposed` condition over seeds{{PRIMARY_SIGN}} (higher is
    better; `main.py` already prints it). Do not redefine it.
 4. No external data, no pretrained weights, no labels or features from outside the RelBench database.
 

@@ -101,3 +101,10 @@ Se `smoke` o `baseline` falliscono, fermarsi e leggere l'errore: la pipeline non
 - GPU condivisa: `./run.sh relbench` si ferma subito se la GPU ha meno di `RB_PREFLIGHT_MIN_FREE_GB` (27,5) GB liberi
   (`RB_SKIP_GPU_CHECK=1` per saltare il controllo); durante la run `main.py` aspetta fino a `RB_GPU_WAIT_SEC` (600 s) che ci
   siano `RB_MIN_FREE_GB` (4,5) GB liberi, poi stampa `GPU_UNAVAILABLE` ed esce con codice 3 (nessuna "riparazione" del codice).
+
+## KIT 0.6.4 — altri task di rel-f1 e checkpoint di RelGNN
+- Un altro task: `RB_TASK=driver-dnf ARC_DEADLINE_HOURS=24 ./run.sh relbench` (anche `driver-position`, regressione con MAE).
+  Specifiche, topic e prompt prendono il task da `RB_TASK`. Baseline del task: `RB_TASK=driver-dnf RB_RECIPE=tuned ./run.sh baseline`.
+- Checkpoint ufficiali di RelGNN valutati con il nostro codice: `./run.sh relgnn-ckpt` (risultati in `artifacts/relgnn_checkpoint_eval_*.md`).
+- La ripartenza tra le passate parte solo da versioni accettate (margine + ricontrollo).
+
