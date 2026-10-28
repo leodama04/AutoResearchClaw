@@ -1,1 +1,1 @@
-relbench-kit 0.6.4 (2026-10-14): warm start between passes only from accepted versions; task configurable with RB_TASK (driver-top3, driver-dnf, driver-position: specs are templates); RelGNN checkpoint evaluation tool; plus 0.6.3
+relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check and repro-stypes (why the baselines change between runs: containers, prepared data, column types); plus 0.6.10

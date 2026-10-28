@@ -54,7 +54,7 @@ Se `smoke` o `baseline` falliscono, fermarsi e leggere l'errore: la pipeline non
   ufficiale, batch 128) e blocca la ricetta, cosi' i miglioramenti di `proposed` sono attribuibili all'architettura. `RB_RECIPE=official` per l'originale.
 - **Il baseline ufficiale e' sotto-addestrato:** 1353 esempi / batch 512 = 3 step per epoca, 30 aggiornamenti in tutto.
 - **VRAM condivisa.** Misurato su moro43 (RTX 5090, 32 GB): Qwen con `LLAMA_CTX=65536` occupa 22,9 GB; un altro utente
-  (llama-server di `perreon`) ne occupava 7,9 GB, quindi restavano ~1,7 GB, meno dei ~4,5 GB che servono a un esperimento.
+  ne occupava 7,9 GB, quindi restavano ~1,7 GB, meno dei ~4,5 GB che servono a un esperimento.
   `LLAMA_CTX=65536 ./run.sh vram` mostra memoria usata e libera con la configurazione scelta. Con `ARC_MAX_TOKENS_MULT=3`
   (fino a 32k token generati) non scendere sotto ~64k di contesto; per liberare VRAM usa `--cache-type-k/-v q8_0` e `--n-cpu-moe N`.
 - **Sweep architetturale (ricetta `tuned`, 14 config x 5 semi).** Due miglioramenti netti e coerenti tra validazione e test:
@@ -107,4 +107,11 @@ Se `smoke` o `baseline` falliscono, fermarsi e leggere l'errore: la pipeline non
   Specifiche, topic e prompt prendono il task da `RB_TASK`. Baseline del task: `RB_TASK=driver-dnf RB_RECIPE=tuned ./run.sh baseline`.
 - Checkpoint ufficiali di RelGNN valutati con il nostro codice: `./run.sh relgnn-ckpt` (risultati in `artifacts/relgnn_checkpoint_eval_*.md`).
 - La ripartenza tra le passate parte solo da versioni accettate (margine + ricontrollo).
+- Modello di una run su altri task: `./run.sh transfer --projects artifacts/rc-XXXX --tasks driver-top3,driver-dnf,driver-position`
+  (`--epochs N` per allenare tutte le condizioni piu' a lungo; `DOCKER_GPUS=device=1` per un'altra GPU del nodo).
+- Statistiche dei tool di tutte le run: `./run.sh tool-stats` -> `docs/runs/tool_stats.md`.
+- Riproducibilità tra container (i baseline cambiano tra una run e l'altra?): `./run.sh repro-check` -> `artifacts/repro_<data>/summary.md` (senza LLM, ~15 min).
+- Tipi delle colonne decisi da un campione casuale (cambiano i risultati?): `./run.sh repro-stypes` -> `artifacts/repro_stypes_<data>/summary_stypes.md` (senza LLM, ~15 min).
+- RelGNN con la configurazione degli autori allenato con il nostro codice, accanto ai baseline:
+  `./run.sh relgnn-train` (default: tre task, 10 e 30 epoche, semi 100-109) -> `artifacts/relgnn_train_*/summary.md`.
 

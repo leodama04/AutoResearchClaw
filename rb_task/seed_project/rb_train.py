@@ -29,6 +29,21 @@ def builder_for(cfg: dict):
     return rb_model_official.build_model if cfg.get("model_impl") == "official" else rb_model.build_model
 
 
+def _rmse(true, pred) -> float:
+    """RMSE without `squared=False` (removed from scikit-learn 1.6; relbench 1.1.0 still passes it)."""
+    return float(np.sqrt(np.mean((np.asarray(true, dtype=float) - np.asarray(pred, dtype=float)) ** 2)))
+
+
+_rmse.__name__ = "rmse"
+
+
+def evaluate_task(task, pred, table=None) -> dict:
+    """task.evaluate with relbench's metrics, except `rmse`, replaced by an equivalent that works with the installed
+    scikit-learn (regression tasks such as driver-position crashed with "unexpected keyword argument 'squared'")."""
+    metrics = [_rmse if getattr(m, "__name__", "") == "rmse" else m for m in task.metrics]
+    return task.evaluate(pred, table, metrics=metrics)
+
+
 def task_setup(task, train_table) -> SimpleNamespace:
     """Loss / tuning metric depending on the task type (as in the official example)."""
     clamp_min = clamp_max = None
@@ -128,7 +143,7 @@ def run_one(ctx, loaders: Dict, cfg: dict, seed: int, device, harness) -> dict:
                 int(tc["max_steps_per_epoch"]), accum=int(loaders.get("_accum", 1)),
             )
             val_pred = predict(model, loaders["val"], setup, task, ctx.entity_table, device)
-            val_metrics = task.evaluate(val_pred, ctx.tables["val"])
+            val_metrics = evaluate_task(task, val_pred, ctx.tables["val"])
             val_value = float(val_metrics[setup.tune_metric])
             epochs_run = epoch
             print(f"  epoch={epoch} train_loss={train_loss:.4f} val_{setup.tune_metric}={val_value:.4f}")
@@ -143,7 +158,7 @@ def run_one(ctx, loaders: Dict, cfg: dict, seed: int, device, harness) -> dict:
         model.load_state_dict(best_state)
         # Test split: evaluated once, for reporting only (never used for selection).
         test_pred = predict(model, loaders["test"], setup, task, ctx.entity_table, device)
-        test_metrics = task.evaluate(test_pred)
+        test_metrics = evaluate_task(task, test_pred)
         peak_gb = torch.cuda.max_memory_allocated() / 1e9 if on_cuda else 0.0
         return {
             "val": float(best_val),

@@ -48,6 +48,18 @@ assert "error" not in res and res["metric"] == "roc_auc" and len(res["val"]) == 
 assert 0.0 <= res["val_mean"] <= 1.0 and 0.0 <= res["test_mean"] <= 1.0, res
 print(f"OK 1: checkpoint ricaricato in modo stretto, val {res['val_mean']:.3f} test {res['test_mean']:.3f} ({res['params']:,} parametri)")
 
+# checkpoint saved with torch_frame 0.2.x: no `fill_values` buffers (the case of the authors' checkpoints)
+state = {k: v for k, v in model.state_dict().items() if not k.endswith(".fill_values")}
+n_fill = len(model.state_dict()) - len(state)
+assert n_fill > 0, "the fake dataset should have timestamp columns"
+old_ckpt = tmp / "old_torch_frame.pth"
+torch.save(state, old_ckpt)
+res_old = E.evaluate_checkpoint(ctx, RelGNN_Model, get_atomic_routes, cfg, lc, old_ckpt, torch.device("cpu"), seeds=(0, 1),
+                                loader_factory=factory)
+assert "error" not in res_old and res_old["missing_filled_from_stats"] == n_fill, res_old.get("error")
+assert abs(res_old["test_mean"] - res["test_mean"]) < 1e-6, (res_old["test_mean"], res["test_mean"])
+print(f"OK 1b: checkpoint senza i {n_fill} buffer `fill_values` (torch_frame 0.2.x) caricato, stesse predizioni")
+
 bad = E.evaluate_checkpoint(ctx, RelGNN_Model, get_atomic_routes, {**cfg, "num_model_layers": 2}, lc, ckpt,
                             torch.device("cpu"), seeds=(0,), loader_factory=factory)
 assert "error" in bad and bad["missing_keys"] and not bad["val"], bad.get("error")

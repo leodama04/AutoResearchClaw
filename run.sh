@@ -17,6 +17,14 @@
 #                                         (conferma dei vincitori su semi NUOVI; RB_SHOW_WARNINGS=1 per vedere i warning)
 #     ./run.sh report artifacts/rc-XXXX [NOME]   (rapporto automatico di una run in docs/runs/)
 #     ./run.sh relgnn-ckpt [--tasks ...]  (checkpoint ufficiali di RelGNN valutati con il nostro codice, senza addestramento)
+#     ./run.sh relgnn-train [--tasks ...] [--epochs 10,30]  (RelGNN con la configurazione degli autori allenato con il nostro codice, con i baseline)
+#     ./run.sh transfer --projects artifacts/rc-XXXX --tasks driver-dnf,...   (modello di una run allenato su altri task)
+#     ./run.sh tool-stats [artifacts/rc-...]   (statistiche dei tool di tutte le run -> docs/runs/tool_stats.md)
+#     ./run.sh repro-check                (senza LLM, ~15-20 min: i baseline cambiano tra container? dati preparati, librerie, GPU
+#                                          -> artifacts/repro_<data>/summary.md)
+#     ./run.sh repro-stypes               (senza LLM, ~15 min: il campione casuale con cui si decidono i tipi delle colonne
+#                                          cambia i risultati? -> artifacts/repro_stypes_<data>/summary_stypes.md)
+#     DOCKER_GPUS=device=1 ./run.sh ...      (usa solo la GPU 1 del nodo)
 #     ARC_DEADLINE_HOURS=24 ./run.sh relbench   (pipeline completa, MODALITA' CODICE con schede dai paper; ARC_SEARCH_MODE=config per la ricerca a configurazioni)
 #     RB_TASK=driver-dnf ARC_DEADLINE_HOURS=24 ./run.sh relbench   (stessa pipeline su un altro task di rel-f1: driver-dnf, driver-position)
 #                                         (si ferma subito se la GPU ha meno di RB_PREFLIGHT_MIN_FREE_GB=27.5 GB liberi; RB_SKIP_GPU_CHECK=1 per saltare)
@@ -84,7 +92,7 @@ gpu_preflight() {
 
 docker_run() {
     # shellcheck disable=SC2086
-    docker run --rm $TTY_FLAGS --init --gpus all \
+    docker run --rm $TTY_FLAGS --init --gpus "${DOCKER_GPUS:-all}" \
         $USER_FLAGS -e HOME=/tmp \
         --shm-size=8g \
         -v "$ARC_DIR":/app \
@@ -189,6 +197,60 @@ case "${1:-}" in
         fi
         docker_run bash -c 'cd /app && RB_SEED_DIR=/app/rb_task/seed_project python3 rb_task/tools/sweep.py 2>&1 | if [ "${RB_SHOW_WARNINGS:-0}" = 1 ]; then cat; else grep -vE "^\s+epoch=|Embedding raw data|UserWarning|ser = pd.to_datetime|^\s+warnings\.warn\("; fi'
         ;;
+    transfer)
+        # Il modello finale di una run allenato su altri task, accanto ai due baseline (10 semi, semi 100-109):
+        #   ./run.sh transfer --projects artifacts/rc-XXXX --tasks driver-top3,driver-dnf,driver-position
+        #   ./run.sh transfer --projects artifacts/rc-A,artifacts/rc-B --tasks driver-dnf --epochs 30
+        # Su un'altra GPU dello stesso nodo: DOCKER_GPUS=device=1 ./run.sh transfer ...   -> artifacts/transfer_<data>/summary.md
+        write_manifest transfer "$@"
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        shift
+        docker_run bash -c 'cd /app && python3 rb_task/tools/transfer_eval.py "$@"' _ "$@"
+        ;;
+    repro-check)
+        # Dentro una run i baseline danno quasi gli stessi numeri seme per seme, tra run diverse no (anche con codice identico).
+        # Tre container come tre run: A (cache dei dati vuota, main.py due volte), B (idem), C (cache di A, una volta).
+        #   ./run.sh repro-check            -> artifacts/repro_<data>/summary.md
+        #   RB_TASK=driver-dnf ./run.sh repro-check
+        write_manifest repro-check "$@"
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        OUT="artifacts/repro_$(date +%Y%m%d-%H%M%S)"
+        TK="${RB_TASK:-driver-top3}"
+        mkdir -p "$ARC_DIR/$OUT"
+        {   # dall'host: l'immagine usata e la data dei suoi strati (le librerie sono cambiate tra una run e l'altra?)
+            docker image inspect "$RB_IMAGE" --format 'image: {{.Id}}  created: {{.Created}}' 2>&1
+            docker image history "$RB_IMAGE" --format '{{.CreatedAt}}  {{.CreatedBy}}' 2>&1
+        } > "$ARC_DIR/$OUT/image.txt" || true
+        docker_run bash -c 'cd /app && python3 rb_task/tools/repro_check.py run --out "$1" --task "$2" --name A --repeat 2' _ "$OUT" "$TK" \
+            || echo "[repro-check] container A: errore (vedi i log in $OUT/A/)" >&2
+        docker_run bash -c 'cd /app && python3 rb_task/tools/repro_check.py run --out "$1" --task "$2" --name B --repeat 2' _ "$OUT" "$TK" \
+            || echo "[repro-check] container B: errore (vedi i log in $OUT/B/)" >&2
+        docker_run bash -c 'cd /app && python3 rb_task/tools/repro_check.py run --out "$1" --task "$2" --name C --repeat 1 --cache-from "$1/A/cache"' _ "$OUT" "$TK" \
+            || echo "[repro-check] container C: errore (vedi i log in $OUT/C/)" >&2
+        docker_run bash -c 'cd /app && python3 rb_task/tools/repro_check.py compare --out "$1"' _ "$OUT"
+        echo "-> $OUT/summary.md"
+        ;;
+    repro-stypes)
+        # I tipi delle colonne (stypes.json) vengono decisi una volta per run da un campione casuale di 1000 righe per tabella.
+        # Qui il campione viene estratto 50 volte; ogni esito diverso viene usato per allenare i baseline (semi 100-109) e
+        # confrontato con le run salvate.   ./run.sh repro-stypes [--n 50] [--max-worlds 4]
+        write_manifest repro-stypes "$@"
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        OUT="artifacts/repro_stypes_$(date +%Y%m%d-%H%M%S)"
+        shift
+        docker_run bash -c 'cd /app && python3 rb_task/tools/repro_check.py stypes --out "$1" --task "$2" "${@:3}"' _ "$OUT" "${RB_TASK:-driver-top3}" "$@"
+        echo "-> $OUT/summary_stypes.md"
+        ;;
+    tool-stats)
+        # Statistiche dei tool di tutte le run (paper trovati/usati, repository, tentativi, righe di codice), senza Docker:
+        #   ./run.sh tool-stats                      (tutte le cartelle artifacts/rc-*)  -> docs/runs/tool_stats.md
+        #   ./run.sh tool-stats artifacts/rc-A artifacts/rc-B --out docs/runs/tool_stats_AB
+        shift
+        (cd "$ARC_DIR" && python3 rb_task/tools/tool_stats.py "$@")
+        ;;
     relgnn-ckpt)
         # Checkpoint UFFICIALI di RelGNN (Hugging Face) valutati con il nostro codice dei dati, senza addestramento:
         #   ./run.sh relgnn-ckpt                         (driver-top3, driver-dnf, driver-position)
@@ -199,6 +261,18 @@ case "${1:-}" in
         EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
         shift
         docker_run bash -c 'cd /app && python3 rb_task/tools/relgnn_checkpoint_eval.py "$@" 2>&1 | grep -vE "Embedding raw data|UserWarning|warnings.warn|ser = pd.to_datetime"' _ "$@"
+        ;;
+    relgnn-train)
+        # RelGNN UFFICIALE con la configurazione degli autori (modello e loader), allenato con il NOSTRO ciclo di addestramento
+        # accanto ai due baseline e alla configurazione usata da Qwen in RUN-008, sugli stessi semi (100-109), senza LLM:
+        #   ./run.sh relgnn-train                                   (driver-top3, driver-dnf, driver-position; 10 e 30 epoche)
+        #   ./run.sh relgnn-train --tasks driver-top3 --epochs 10,30,60
+        # Scrive artifacts/relgnn_train_<data>/summary.md (+ summary.json, results.json). Serve la GPU libera (pipeline ferma).
+        write_manifest relgnn-train "$@"
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        shift
+        docker_run bash -c 'cd /app && python3 rb_task/tools/relgnn_train.py "$@" 2>&1 | grep -vE "Embedding raw data|UserWarning|warnings.warn|ser = pd.to_datetime"' _ "$@"
         ;;
     report)
         # ./run.sh report artifacts/rc-XXXX [NOME]   -> docs/runs/<NOME>_auto.md (fatti letti dai file della run)
@@ -271,7 +345,7 @@ case "${1:-}" in
             --topic "$TOPIC" --auto-approve
         ;;
     *)
-        echo "Uso: $0 {build|run \"<topic>\"|shell|exec <cmd...>|build-relbench|smoke|baseline|vram|sweep|relgnn-ckpt [opzioni]|report <run_dir> [nome]|relbench [\"<topic>\"]}" >&2
+        echo "Uso: $0 {build|run \"<topic>\"|shell|exec <cmd...>|build-relbench|smoke|baseline|vram|sweep|relgnn-ckpt [opzioni]|relgnn-train [opzioni]|transfer [opzioni]|tool-stats [run...]|report <run_dir> [nome]|relbench [\"<topic>\"]}" >&2
         exit 1
         ;;
 esac

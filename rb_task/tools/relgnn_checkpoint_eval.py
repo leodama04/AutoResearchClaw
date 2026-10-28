@@ -131,6 +131,9 @@ def evaluate_checkpoint(ctx, RelGNN_Model, get_atomic_routes, model_config, load
     import torch
     from relbench.base import TaskType
 
+    sys.path.insert(0, str(SEED))
+    from rb_train import evaluate_task  # relbench metrics, with an rmse that works with scikit-learn >= 1.6
+
     task = ctx.task
     binary = task.task_type == TaskType.BINARY_CLASSIFICATION
     key = "roc_auc" if binary else "mae"
@@ -139,19 +142,25 @@ def evaluate_checkpoint(ctx, RelGNN_Model, get_atomic_routes, model_config, load
         clamp = tuple(np.percentile(ctx.tables["train"].df[task.target_col].to_numpy(), [2, 98]))
     model = build_model(RelGNN_Model, get_atomic_routes, ctx, model_config, 1).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    res = model.load_state_dict(state, strict=False)
+    res = model.load_state_dict(state, strict=False)  # a SHAPE mismatch still raises here
     missing, unexpected = list(res.missing_keys), list(res.unexpected_keys)
+    # torch_frame >= 0.3 stores the NA fill values of the column encoders (computed from col_stats when the model is
+    # built) as a buffer `fill_values`; checkpoints saved with torch_frame 0.2.x (the authors' 0.2.3) do not have it.
+    # Those keys are kept as computed from OUR statistics, exactly what 0.2.3 computed at every forward pass.
+    from_stats = [k for k in missing if k.endswith(".fill_values")]
+    unsafe = [k for k in missing if k not in from_stats]
     out = {"metric": key, "params": int(sum(p.numel() for p in model.parameters())), "missing_keys": missing[:20],
-           "unexpected_keys": unexpected[:20], "val": [], "test": []}
-    if missing or unexpected:
-        out["error"] = f"checkpoint does not match the model: {len(missing)} missing, {len(unexpected)} unexpected keys"
+           "missing_filled_from_stats": len(from_stats), "unexpected_keys": unexpected[:20], "val": [], "test": []}
+    if unsafe or unexpected:
+        out["error"] = (f"checkpoint does not match the model: {len(unsafe)} missing (e.g. {unsafe[:3]}), "
+                        f"{len(unexpected)} unexpected keys (e.g. {unexpected[:3]})")
         return out
     make = loader_factory or (lambda split: official_loader(ctx, split, loader_config))
     for s in seeds:
         for split in ("val", "test"):
             torch.manual_seed(s)
             pred = predict(model, make(split), ctx, device, clamp, binary)
-            m = task.evaluate(pred, ctx.tables["val"]) if split == "val" else task.evaluate(pred)
+            m = evaluate_task(task, pred, ctx.tables["val"] if split == "val" else None)
             out[split].append(float(m[key]))
     for split in ("val", "test"):
         v = out[split]
@@ -208,7 +217,9 @@ def main() -> int:
         if "test_mean" in r:
             lines.append(f"| {r['task']} | {r['metric']} | {r['val_mean']:.4f} ± {r['val_std']:.4f} | "
                          f"{r['test_mean']:.4f} ± {r['test_std']:.4f} | {p.get('RelGNN', '?')} | {p.get('RDL', '?')} | "
-                         f"{r.get('params', 0):,} parametri |")
+                         f"{r.get('params', 0):,} parametri"
+                         + (f"; {r['missing_filled_from_stats']} buffer `fill_values` ricalcolati (torch_frame 0.3)"
+                            if r.get("missing_filled_from_stats") else "") + " |")
         else:
             lines.append(f"| {r['task']} | - | - | - | {p.get('RelGNN', '?')} | {p.get('RDL', '?')} | ERRORE: {r.get('error')} |")
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)

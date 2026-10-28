@@ -2,6 +2,93 @@
 
 Ogni run cita la versione del kit usata (`rb_task/VERSION`). Le patch al codice della pipeline si applicano con `python3 rb_task/patches/apply_relbench_patches.py` (idempotente, crea `.bak`).
 
+## 0.6.11 — 2026-10-23 (perché i baseline cambiano tra una run e l'altra)
+Nuovo strumento, nessuna modifica alla pipeline né ai file protetti del progetto.
+- **Osservazione** (dai `confirmation.json` e dai `results.json` per seme di RUN-003–RUN-006, tre conferme per run, semi 100–109):
+  dentro una run le conferme danno quasi lo stesso risultato seme per seme (`baseline_graphsage`: in media 0,002 di differenza per
+  seme; `baseline_tuned`: medie entro 0,006), tra run diverse no (`baseline_graphsage`: 0,035 per seme; `baseline_tuned` da 0,772 a
+  0,802), anche quando tutti i file eseguiti per i baseline sono identici byte per byte (RUN-005 contro RUN-006). C'è qualcosa che
+  resta fisso dentro una run e cambia tra le run; la causa non è identificata.
+- `./run.sh repro-check` (`rb_task/tools/repro_check.py`, senza LLM, ~15 min): tre container come tre run, con il progetto
+  ufficiale del kit e gli stessi semi. A e B partono da una cache dei dati vuota (tipi delle colonne, tabelle materializzate,
+  embedding del testo: `RB_CACHE_DIR`, che nella pipeline sta in `/tmp` del container e si ricostruisce a ogni run) ed eseguono
+  `main.py` due volte; C riusa la cache di A. Salva per ogni container i risultati per seme, l'impronta della cache, le versioni
+  delle librerie e la GPU; `run.sh` salva dall'host id e strati dell'immagine Docker. Il confronto (`summary.md`) riporta le
+  differenze per seme dentro lo stesso container e tra container, e confronta le cache file per file (tipi delle colonne,
+  statistiche come le liste delle categorie, tensori, embedding compresi).
+- `./run.sh repro-stypes` (`repro_check.py stypes`), aggiunto dopo la prima prova (RUN-014: container diversi danno gli stessi
+  risultati e le cache sono identiche, ma le run salvate cadono in pochi gruppi con risultati per seme quasi uguali). I tipi delle
+  colonne vengono decisi una volta per run da `get_stype_proposal` di RelBench su un campione casuale di 1000 righe per tabella
+  (`DataFrame.sample` senza seme). Lo strumento estrae il campione 50 volte (semi numpy 0–49), conta le varianti di `stypes.json`
+  e le colonne che cambiano, allena i baseline con ciascuna variante (fino a 4) e confronta i risultati per seme con quelli delle
+  run salvate (RUN-003, 004, 005, 006, 008 e la prova del 23/10).
+- Test: `test_repro_check.py` (progetto finto: dati preparati diversi tra container -> A ≠ B, C = A; il caso in cui anche C ≠ A; varianti dei tipi delle colonne valutate una per una).
+
+## 0.6.10 — 2026-10-15 (rapporto automatico, dopo RUN-011)
+- `rb_task/tools/run_report.py`: il topic nella panoramica è quello usato dalla run (passato da `run.sh`, per esempio quello di
+  `RB_TASK=driver-dnf`, letto da `stage-08/novelty_report.json`), non quello di default scritto in `config.yaml` (che diceva
+  driver-top3 anche per RUN-011); il percorso del PDF del paper è relativo alla run. Nessuna modifica alla pipeline.
+
+## 0.6.9 — 2026-10-15 (RelGNN con la configurazione degli autori)
+Nuovo strumento, nessuna modifica alla pipeline ne' ai file protetti del progetto.
+- `./run.sh relgnn-train` (`rb_task/tools/relgnn_train.py`): domanda dopo RUN-008/RUN-009, cioe' se il divario tra RelGNN
+  allenato da Qwen (test 0,733 su driver-top3) e il checkpoint degli autori (0,8585 con il nostro codice) dipende dalla
+  configurazione o dall'addestramento, e se allenare piu' a lungo serve (domanda del correlatore sui training step).
+  Per ogni task, numero di epoche (`--epochs`, default 10,30) e seme (default 100-109) allena:
+  `baseline_graphsage`, `baseline_tuned` (modello RDL congelato, nostro loader), `relgnn_authors` (`RelGNN_Model` del
+  repository ufficiale con modello E loader degli autori da `get_configs`: strati, canali, teste, `simplified_MP`, batch,
+  fanout, salti, `subgraph_type`) e `relgnn_run008` (stesso modello con 2 strati e 4 teste come Qwen in RUN-008, nostro
+  loader con batch 128). Tutte con `rb_train.run_one` della pipeline: Adam, lr della ricetta (0,005), epoca migliore
+  scelta sulla validazione, test valutato una volta. Riporta gli aggiornamenti dei pesi per condizione e le differenze
+  appaiate contro `baseline_tuned`; riferimenti: paper e checkpoint (RUN-009).
+- Il repository di RelGNN non contiene il codice di addestramento (lo script "per riprodurre i risultati" valuta i
+  checkpoint): learning rate ed epoche degli autori non sono noti, quindi si usano quelli della nostra ricetta.
+- Test: `test_relgnn_train.py` (FakeDataset: classe ufficiale, configurazioni, baseline congelati, semi, epoche,
+  aggiornamenti per epoca, differenze appaiate, riepilogo).
+
+## 0.6.8 — 2026-10-14 (correzioni di `tool-stats` dopo la prima tabella)
+- Tentativi con codice ufficiale importato: letti dagli `import vendor_*` del codice di ogni tentativo invece che dal campo
+  `arc_official_code`, che esiste solo dal kit 0.6. Nella prima tabella RUN-005 e RUN-006 risultavano 0 (i loro documenti ne
+  contano 1 e 5); su RUN-008 il conteggio resta 86.
+- Correlazione validazione-test con il numero di tentativi usati (`0.053 (n=190)`).
+- Modello finale senza codice ufficiale: scritto "no" invece di "-" (che si confondeva con "dato assente").
+- Conferma dei kit senza statistiche appaiate (RUN-003): Δ come differenza delle medie, senza p.
+- Test: `test_tool_stats.py` (run di prova: import nel codice senza il campo, file vendor esclusi, `gnn_type` letto da
+  `PROPOSED_OVERRIDES`, "no" per il modello finale).
+
+## 0.6.7 — 2026-10-14 (strumenti per le richieste del correlatore)
+- `./run.sh transfer --projects <run> --tasks ...` (`rb_task/tools/transfer_eval.py`): il modello finale di una run
+  (`stage-13/experiment_final`: `rb_model.py`, `PROPOSED_OVERRIDES`, nuovi file e codice vendorizzato) allenato su altri task
+  accanto a `baseline_graphsage` e `baseline_tuned`, 10 semi (100–109, mai usati per scegliere), stessa ricetta; tabella con
+  medie e differenze appaiate (IC 95%, p, semi migliori; "meglio" = piu' basso per la MAE). `--epochs N` usa le stesse epoche
+  per TUTTE le condizioni. I file protetti (main.py, rb_train.py, ...) vengono dal kit attuale (`--infra run` per usare quelli
+  della run): il modello resta quello della run, le correzioni del kit (es. rmse 0.6.6) valgono anche per le run vecchie.
+- `./run.sh tool-stats [run...]` (`rb_task/tools/tool_stats.py`, senza Docker): per ogni run query, candidati, shortlist,
+  schede, repository, file vendorizzati, tentativi (valutati, crash, riparati, identici, respinti, errori dell'LLM),
+  tentativi con codice ufficiale importato e moduli, schede citate, architetture provate, righe cambiate per tentativo,
+  righe e file cambiati nel modello finale, uso del codice ufficiale nel modello finale, conferma (Δ val/test, p), correlazione
+  val-test, voto del paper. Scrive `docs/runs/tool_stats.md` / `.json`.
+- `DOCKER_GPUS=device=1 ./run.sh ...`: sceglie la GPU del nodo (default tutte).
+- Test: `test_transfer_eval.py` (progetto di prova: semi, epoche, differenze appaiate anche per la MAE, file protetti dal kit).
+
+## 0.6.6 — 2026-10-14 (task di regressione)
+- `./run.sh relgnn-ckpt` su driver-position: `TypeError: got an unexpected keyword argument 'squared'`. relbench 1.1.0 calcola
+  `rmse` con `mean_squared_error(..., squared=False)`, argomento rimosso da scikit-learn 1.6; `task.evaluate` calcola tutte le
+  metriche del task, quindi OGNI valutazione di un task di regressione si fermava, anche nel seed project (baseline e pipeline
+  su driver-position). Ora `rb_train.evaluate_task` usa le metriche di relbench sostituendo solo `rmse` con un calcolo
+  equivalente (radice dell'errore quadratico medio); lo strumento dei checkpoint usa la stessa funzione.
+  Nessun effetto sui task di classificazione (driver-top3, driver-dnf): stesse metriche di prima.
+- Test: `test_regression_eval.py` (metriche r2/mae/rmse e addestramento completo su un task di regressione).
+
+## 0.6.5 — 2026-10-14 (strumento dei checkpoint di RelGNN)
+- Primo uso di `./run.sh relgnn-ckpt` sul cluster: "7 missing, 0 unexpected keys" su tutti e tre i task. Causa: da torch_frame 0.3
+  i valori di riempimento dei NaN delle colonne (`fill_values`, calcolati dalle statistiche delle colonne quando si costruisce il
+  modello) sono salvati come buffer; i checkpoint degli autori sono stati salvati con torch_frame 0.2.3, che li calcolava a ogni
+  passo e non li salvava. Le 7 chiavi sono gli encoder delle colonne data/ora delle 7 tabelle di rel-f1 che le hanno.
+  Ora queste chiavi vengono lasciate come calcolate dalle nostre statistiche (stesso calcolo della 0.2.3) e il report lo dice;
+  qualsiasi altra chiave mancante o in piu' resta un errore, con i nomi delle chiavi.
+- Test: caso "checkpoint salvato senza `fill_values`" in `test_relgnn_checkpoint_eval.py` (stesse predizioni).
+
 ## 0.6.4 — 2026-10-14 (dopo RUN-008)
 Due modifiche al comportamento, decise dopo RUN-008; nient'altro cambia in cio' che Qwen vede o sceglie.
 - **Ripartenza tra le passate solo da versioni accettate.** Prima la passata successiva partiva dal tentativo con la metrica

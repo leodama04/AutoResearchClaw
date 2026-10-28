@@ -153,3 +153,6 @@ llama-server.log
 relbench_kit.zip
 rb_task/task_spec/METHOD_GROUND_TRUTH.md
 rb_task/task_spec/KNOWLEDGE.md
+
+# copie generate da rb_task/patches/apply_relbench_patches.py
+.claude/skills/

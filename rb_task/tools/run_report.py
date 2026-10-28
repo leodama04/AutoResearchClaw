@@ -108,7 +108,10 @@ def main():
         cfg = None
     if cfg:
         e = cfg.get("experiment", {})
-        w(f"| topic | {cfg.get('research', {}).get('topic')} |")
+        # The topic actually used is the one passed by run.sh (e.g. RB_TASK=driver-dnf), recorded by stage 8;
+        # config.yaml keeps the default one.
+        topic = (jload(R / "stage-08" / "novelty_report.json", {}) or {}).get("topic") or cfg.get("research", {}).get("topic")
+        w(f"| topic | {topic} |")
         w(f"| llm | {cfg.get('llm', {}).get('primary_model')} |")
         w(f"| experiment | mode={e.get('mode')}, time_budget_sec={e.get('time_budget_sec')}, max_iterations={e.get('max_iterations')}, "
           f"metric={e.get('metric_key')} ({e.get('metric_direction')}) |")
@@ -217,7 +220,7 @@ def main():
         if q.get(k):
             w(f"- {k}: " + "; ".join(str(x)[:160] for x in q[k][:4]))
     pdf = R / "stage-22" / "paper.pdf"
-    w(f"- paper PDF: {'`' + str(pdf) + '`' if pdf.exists() else 'not produced'}")
+    w(f"- paper PDF: {'`' + run_id + '/stage-22/paper.pdf`' if pdf.exists() else 'not produced'}")
 
     paper_p = R / "stage-23" / "paper_final_verified.md"
     if paper_p.exists():
