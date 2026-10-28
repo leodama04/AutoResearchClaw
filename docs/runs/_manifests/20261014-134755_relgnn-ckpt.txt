@@ -1,0 +1,7 @@
+date: 2026-10-14T13:47:55+00:00
+command: ./run.sh relgnn-ckpt relgnn-ckpt --tasks driver-position
+kit: relbench-kit 0.6.6 (2026-10-14): regression tasks (driver-position) evaluate with an rmse compatible with scikit-learn >= 1.6; plus 0.6.5
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:

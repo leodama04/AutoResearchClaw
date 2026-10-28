@@ -1,0 +1,10 @@
+date: 2026-10-14T15:27:12+00:00
+command: ./run.sh relbench relbench
+kit: relbench-kit 0.6.8 (2026-10-14): tool-stats reads official imports from each attempt's code (also runs before kit 0.6); plus 0.6.7
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
+  ARC_DEADLINE_HOURS=24
+  ARC_RUN_STARTED_AT=1791991632
+  RB_TASK=driver-dnf

@@ -1,0 +1,7 @@
+date: 2026-10-14T13:41:07+00:00
+command: ./run.sh relgnn-ckpt relgnn-ckpt
+kit: relbench-kit 0.6.5 (2026-10-14): relgnn-ckpt accepts the torch_frame>=0.3 fill_values buffers missing from the authors' checkpoints; plus 0.6.4
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:

@@ -1,0 +1,7 @@
+date: 2026-10-23T15:52:24+00:00
+command: ./run.sh repro-check repro-check
+kit: relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check (do the baselines change between containers? prepared data, libraries, GPU); plus 0.6.10
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:

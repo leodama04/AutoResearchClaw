@@ -1,0 +1,7 @@
+date: 2026-10-14T14:14:45+00:00
+command: ./run.sh transfer transfer --projects artifacts/rc-20261013-131020-9b9601 --tasks driver-top3,driver-dnf,driver-position
+kit: relbench-kit 0.6.7 (2026-10-14): ./run.sh transfer (model of a run trained on other tasks with the baselines) and ./run.sh tool-stats (tool statistics of all runs); DOCKER_GPUS; plus 0.6.6
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:

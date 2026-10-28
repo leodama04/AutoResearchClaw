@@ -1,0 +1,7 @@
+date: 2026-10-15T18:54:13+00:00
+command: ./run.sh transfer transfer --projects artifacts/rc-20261014-152719-4d33ce --tasks driver-top3,driver-dnf,driver-position
+kit: relbench-kit 0.6.9 (2026-10-15): ./run.sh relgnn-train (official RelGNN with the authors' configuration trained with our loop, next to the baselines); plus 0.6.8
+git: 924e5d7 (uncommitted changes)
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 1468 MiB, 32607 MiB
+env:

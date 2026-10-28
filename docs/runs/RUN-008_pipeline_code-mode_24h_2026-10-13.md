@@ -155,7 +155,9 @@ Scegliendo sulla validazione la pipeline non può trovarli (e scegliere sul test
   nella tesi si usano i numeri di questo documento, non il paper generato.
 
 ## 6. Errata
-Nessuna.
+Nessuna. Aggiornamento 2026-10-15: l'ipotesi su RelGNN (§4) è stata verificata in RUN-012. A parità di codice e addestramento,
+con la configurazione degli autori RelGNN fa 0,790–0,802 di test su driver-top3 e con quella usata da Qwen 0,716–0,722: la
+configurazione spiega gran parte dello 0,733 di questa run; allenare più a lungo aggiunge poco (+0,012 da 10 a 30 epoche).
 
 ## 7. File di riferimento
 - `stage-13_v1/`, `stage-13_v2/`, `stage-13/`: `refinement_log.json`, `experiment_v*/`, `confirmation.json`.
