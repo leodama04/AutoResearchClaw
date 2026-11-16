@@ -22,6 +22,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _arc_log_usage(model: str, data: dict, usage: Any, choice: Any) -> None:
+    """ARC patch: append the token usage of one call to $ARC_LLM_USAGE_LOG (JSON lines)."""
+    path = os.environ.get("ARC_LLM_USAGE_LOG", "")
+    if not path:
+        return
+    try:
+        rec = {
+            "t": time.time(),
+            "model": str(data.get("model", model)),
+            "usage": usage if isinstance(usage, dict) else {},
+            "finish_reason": (choice or {}).get("finish_reason", "") if isinstance(choice, dict) else "",
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:  # noqa: BLE001  (logging must never stop the pipeline)
+        pass
+
 # Models that require max_completion_tokens instead of max_tokens
 _NEW_PARAM_MODELS = frozenset(
     {
@@ -528,6 +546,7 @@ class LLMClient:
                     or _model_lower.startswith("ernie")
                     or _model_lower.startswith("spark")
                     or _model_lower.startswith("gemma")
+                    or _model_lower.startswith("gemini")  # ARC patch: same JSON handling as Qwen
                     or self._normalize_wire_api(self.config.wire_api) == "responses"
                 )
                 if _no_response_format:
@@ -653,6 +672,7 @@ class LLMClient:
 
         choice = data["choices"][0]
         usage = data.get("usage", {})
+        _arc_log_usage(model, data, usage, choice)  # ARC patch: token usage log
 
         message = choice.get("message", {})
         content = message.get("content") or ""

@@ -106,6 +106,7 @@ docker_run() {
         -e RB_DATASET -e RB_TASK -e RB_TIME_BUDGET_SEC -e RB_GPU_MEM_BUDGET_GB -e RB_NODE_BUDGET_SCALE -e RB_RECIPE -e RB_SWEEP_MODE -e RB_SWEEP_SEEDS -e RB_SWEEP_DEEP -e RB_SWEEP_RECIPE_JSON -e RB_SWEEP_ONLY -e RB_SWEEP_SEED_OFFSET -e RB_SHOW_WARNINGS -e RB_SWEEP_THREADS -e RB_SWEEP_CONFIGS_JSON \
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         -e S2_API_KEY -e GITHUB_TOKEN -e OPENALEX_API_KEY -e TAVILY_API_KEY_UNSET \
+        -e GEMINI_API_KEY \
         ${EXTRA_DOCKER_ARGS[@]+"${EXTRA_DOCKER_ARGS[@]}"} \
         "$IMAGE" "$@"
 }
@@ -281,6 +282,14 @@ case "${1:-}" in
         MAN="$(ls -t "$ARC_DIR"/docs/runs/_manifests/*_relbench.txt 2>/dev/null | head -1 || true)"
         (cd "$ARC_DIR" && python3 rb_task/tools/run_report.py "$RUN_DIR" --out "docs/runs/${NAME}_auto.md" ${MAN:+--manifest "$MAN"} --title "$NAME")
         ;;
+    gemini-test)
+        # Two short calls to the Gemini API with the Gemini config: no llama-server, no GPU needed.
+        #   export GEMINI_API_KEY=...   (never write the key in a file of the repository)
+        [ -n "${GEMINI_API_KEY:-}" ] || { echo "ERRORE: prima esegui  export GEMINI_API_KEY=..." >&2; exit 2; }
+        IMAGE="$RB_IMAGE"
+        EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)
+        docker_run python3 /app/rb_task/tools/gemini_smoke.py /app/config.arc.relbench.code.gemini.yaml
+        ;;
     relbench)
         # Default: CODE MODE (Qwen writes code using implementation cards built from the papers' full text and
         # official code). ARC_SEARCH_MODE=config for the architecture-settings search of RUN-003.
@@ -292,6 +301,11 @@ case "${1:-}" in
             *) echo "ATTENZIONE: ${RB_DATASET:-rel-f1}/$RB_TASK_NAME non e' nel registro dei task del kit: la specifica mostrera' a Qwen una descrizione generica." >&2 ;;
         esac
         echo "[task] ${RB_DATASET:-rel-f1} / $RB_TASK_NAME ($RB_TASK_KIND)" >&2
+        # ARC_LLM=gemini: the LLM is the Gemini API, so the GPU only needs room for the experiments.
+        if [ "${ARC_LLM:-local}" = "gemini" ]; then
+            [ -n "${GEMINI_API_KEY:-}" ] || { echo "ERRORE: prima esegui  export GEMINI_API_KEY=..." >&2; exit 2; }
+            export RB_PREFLIGHT_MIN_FREE_GB="${RB_PREFLIGHT_MIN_FREE_GB:-5}"
+        fi
         gpu_preflight
         export ARC_RUN_STARTED_AT="$(date +%s)"
         write_manifest relbench "$@"
@@ -307,7 +321,15 @@ case "${1:-}" in
             SEEDMAP=""
             PATIENCE="${ARC_REFINE_PATIENCE:-5}"; NOMET="${ARC_MAX_NO_METRICS:-3}"
         fi
+        if [ "${ARC_LLM:-local}" = "gemini" ]; then
+            CFG="${CFG%.yaml}.gemini.yaml"          # same settings, only the llm block differs
+            EXTRA_DOCKER_ARGS=(-e ARC_NO_LLM=1)     # do not start llama-server
+            echo "[llm] Gemini API, config $CFG" >&2
+        fi
+        USAGE_LOG="/app/llm_usage_$(date +%Y%m%d-%H%M%S)_${ARC_LLM:-local}.jsonl"
+        echo "[llm] token usage -> ${USAGE_LOG#/app/}" >&2
         docker_run env \
+            ARC_LLM_USAGE_LOG="$USAGE_LOG" \
             ARC_SEED_PROJECT_DIR=/app/rb_task/seed_project \
             ARC_SEED_FILE_MAP="$SEEDMAP" \
             RB_RECIPE="${RB_RECIPE:-tuned}" \
