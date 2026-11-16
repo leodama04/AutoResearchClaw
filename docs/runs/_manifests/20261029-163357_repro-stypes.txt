@@ -1,0 +1,7 @@
+date: 2026-10-29T16:33:57+00:00
+command: ./run.sh repro-stypes repro-stypes --max-worlds 3 --project artifacts/ch5_aggr_max_only --out artifacts/ch5_c_aggrmax_top3
+kit: relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check and repro-stypes (why the baselines change between runs: containers, prepared data, column types); plus 0.6.10
+git: 25844e5
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 9362 MiB, 32607 MiB
+env:

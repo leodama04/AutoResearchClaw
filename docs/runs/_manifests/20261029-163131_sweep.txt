@@ -1,0 +1,11 @@
+date: 2026-10-29T16:31:31+00:00
+command: ./run.sh sweep 
+kit: relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check and repro-stypes (why the baselines change between runs: containers, prepared data, column types); plus 0.6.10
+git: 25844e5
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 26014 MiB, 32607 MiB
+env:
+  RB_SWEEP_CONFIGS_JSON=/app/rb_task/task_spec/ablation_run004.json
+  RB_SWEEP_SEED_OFFSET=100
+  RB_SWEEP_SEEDS=10
+  RB_SWEEP_THREADS=1

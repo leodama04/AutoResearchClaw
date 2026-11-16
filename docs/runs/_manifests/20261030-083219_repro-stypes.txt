@@ -1,0 +1,9 @@
+date: 2026-10-30T08:32:19+00:00
+command: ./run.sh repro-stypes repro-stypes --max-worlds 3 --project artifacts/rc-20261014-152719-4d33ce/stage-13/experiment_final --out artifacts/ch5_c2_run011_top3
+kit: relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check and repro-stypes (why the baselines change between runs: containers, prepared data, column types); plus 0.6.10
+git: 25844e5
+host: moro43
+gpu: NVIDIA GeForce RTX 5090, 40 MiB, 32607 MiB
+env:
+  RB_GPU_WAIT_SEC=43200
+  RB_TASK=driver-top3
