@@ -343,6 +343,19 @@ def _execute_experiment_design(
             "compute_budget": {"max_gpu": 1, "max_hours": 4},
         }
 
+    # ARC patch: plan wrapped in one top-level key (e.g. Gemini: {"experiment_plan": {...}}).
+    # If no required key is at the top level and exactly one top-level value is a dict that
+    # contains them, use that dict. Plans with the keys at the top level are not touched.
+    _arc_req = ("baselines", "proposed_methods", "ablations")
+    if isinstance(plan, dict) and not any(k in plan for k in _arc_req):
+        _arc_inner = [
+            (k, v) for k, v in plan.items()
+            if isinstance(v, dict) and any(r in v for r in _arc_req)
+        ]
+        if len(_arc_inner) == 1:
+            logger.info("Stage 9: plan wrapped in '%s': using its content", _arc_inner[0][0])
+            plan = _arc_inner[0][1]
+
     # Schema-deficit guard: when the LLM returned a parseable dict that
     # bypassed every fallback cascade (because plan was never None) but
     # lacks any actual experiment content, pause rather than silently
