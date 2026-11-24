@@ -78,3 +78,13 @@ Lo stage 5 cerca il codice solo per i primi 5 paper della shortlist, con DuckDuc
 (RelGT-AC, foundation model per database, viste SQL, augmentation con LM, attacchi avversari) e la ricerca non ha restituito nulla; RelGT era 8° e non è stato cercato.
 Il codice ufficiale di RelGT esiste (`github.com/snap-stanford/relgt`, 816 KB, 6 file Python; i moduli del modello dipendono solo da torch, PyG, numpy ed einops)
 ed è citato sia nel PDF sia nel README con l'id arXiv. Kit 0.5.2: ricerca per i paper delle schede e codice importabile (vedi CHANGELOG).
+
+## Aggiornamento 2026-10-30: ablazione e varianti dei tipi delle colonne
+- **Varianti ([RUN-017](RUN-017_varianti-stypes_modelli_2026-10-30.md)).** Questa run aveva la variante 3 dei tipi delle colonne
+  ([RUN-015](RUN-015_repro-stypes_2026-10-23.md)). Rivalutato con i file della run e le varianti 1, 2 e 3, il modello finale migliora
+  il test di +0,038 (p = 0,010), +0,026 (p = 0,004) e +0,032 (p = 0,002): il guadagno non dipende dalla variante.
+- **Ablazione ([RUN-016](RUN-016_ablazione_run004_2026-10-30.md)), risponde al "Non dimostrato" del §4b.** Con lr 5e-3 (la ricetta) la
+  stessa architettura dà da +0,012 a +0,024 sul test, mai in modo significativo (p tra 0,057 e 0,178), e una validazione più bassa
+  del baseline (da −0,007 a −0,036). lr 1e-3 da solo sul modello ufficiale non aiuta (da −0,024 a +0,006); senza connessioni residue
+  il guadagno sparisce; l'aggregazione `max` con lr 1e-3 guadagna quanto questo modello (da +0,024 a +0,048). Il guadagno richiede
+  quindi il learning rate più basso insieme alle altre modifiche, in particolare alle connessioni residue; non è specifico di GATv2.

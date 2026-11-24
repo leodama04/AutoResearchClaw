@@ -149,6 +149,13 @@ e 0,811.
 Nessuna. Aggiornamento 2026-10-15: allenato su driver-top3 (RUN-013) il modello finale di questa run migliora il test di
 +0,032 (p = 0,006, 9 semi su 10), mentre su driver-dnf resta peggiore del baseline (−0,030).
 
+Aggiornamento 2026-10-30 ([RUN-017](RUN-017_varianti-stypes_modelli_2026-10-30.md)): rivalutato con i file della run e le varianti
+1–3 dei tipi delle colonne, il modello finale è peggiore del baseline su driver-dnf con le varianti 1 e 3 (−0,021, p = 0,002;
+−0,038, p = 0,014) e uguale con la variante 2 (−0,004 e +0,002 in due valutazioni). La conclusione del §4 ("peggiore del baseline
+sul test") vale quindi con 2 varianti su 3. La variante usata da questa run non si può identificare: su driver-dnf le varianti
+spostano i baseline quanto una ripetizione della valutazione. Su driver-top3 il guadagno di RUN-013 c'è solo con la variante 1
+(+0,033, p = 0,012; varianti 2 e 3: +0,008, p = 0,46, e +0,004, p = 0,60).
+
 ## 7. File di riferimento
 - `stage-13_v1/`, `stage-13_v2/`, `stage-13/`: `refinement_log.json`, `experiment_v*/`, `confirmation.json`, `experiment_final/`.
 - `stage-03/queries.json`, `stage-05/shortlist.jsonl`, `stage-06/knowledge_meta.json`, `stage-06/cards/K2_implementation_card.md`.

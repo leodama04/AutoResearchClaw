@@ -156,3 +156,9 @@ rb_task/task_spec/KNOWLEDGE.md
 
 # copie generate da rb_task/patches/apply_relbench_patches.py
 .claude/skills/
+
+# By-products of runs on the cluster (kept in the data archive, not in git)
+/llm_usage_*.jsonl
+/*.out
+# Data archive (see README)
+/data

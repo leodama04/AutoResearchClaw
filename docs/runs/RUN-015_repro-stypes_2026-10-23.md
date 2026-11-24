@@ -94,5 +94,15 @@ RUN-008, 0,753 con la variante 3.
 - **Messaggi del 23/10.** Avevo escluso i dati preparati come causa perché le cache di RUN-014 erano identiche. Il motivo era
   che i tre container avevano pescato la stessa variante, non che la preparazione sia deterministica.
 
+- **Aggiornamento 2026-10-30.** La rivalutazione dei modelli principali con le varianti 1–3 (§5) è in
+  [RUN-017](RUN-017_varianti-stypes_modelli_2026-10-30.md), l'ablazione di RUN-004 in [RUN-016](RUN-016_ablazione_run004_2026-10-30.md).
+  Le varianti cambiano anche le **differenze appaiate**, non solo i valori assoluti: per esempio l'aggregazione `max` da sola guadagna
+  +0,036 sul test con la variante 1, −0,006 con la 2 e +0,017 con la 3. La frase del §5 "I confronti appaiati restano validi, perché
+  tutte le condizioni di una run usano la stessa variante" va quindi letta come "dentro una run i confronti sono fatti a parità di
+  condizioni", non come "non dipendono dalla variante". Il guadagno di RUN-004 (ipotesi del §4) regge invece con tutte e tre le varianti.
+  Verificata anche l'ipotesi del §4 sugli strumenti: RUN-010, RUN-012 e RUN-013 hanno usato la variante 1, quella con i baseline più
+  bassi, il che spiega perché i loro baseline sono più bassi di quelli delle conferme di RUN-003/005 (variante 2) e RUN-004/008
+  (variante 3).
+
 ## 7. File di riferimento
 `artifacts/repro_stypes_<data>/summary_stypes.md`, `stypes_info.json`, `stypes/variant_*.json`, `worlds/v*/results.json`.

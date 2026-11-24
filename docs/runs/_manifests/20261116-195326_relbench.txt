@@ -1,0 +1,12 @@
+date: 2026-11-16T19:53:26+01:00
+command: ./run.sh relbench relbench
+kit: relbench-kit 0.6.11 (2026-10-23): ./run.sh repro-check and repro-stypes (why the baselines change between runs: containers, prepared data, column types); plus 0.6.10
+git: bc45908
+host: faretra
+gpu: Unable to determine the device handle for GPU0: 0000:01:00.0: Unknown Error
+env:
+  ARC_DEADLINE_HOURS=3
+  ARC_DIR=/home/damario/AutoResearchClaw
+  ARC_LLM=gemini
+  ARC_RUN_STARTED_AT=1794855206
+  RB_PREFLIGHT_MIN_FREE_GB=5

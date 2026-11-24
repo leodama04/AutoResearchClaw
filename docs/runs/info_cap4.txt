@@ -1,0 +1,55 @@
+=== software ===
+python 3.12.3
+torch 2.8.0+cu128
+torch_geometric 2.8.0.post1
+pytorch_frame 0.3.0
+pyg_lib 0.6.0+pt28cu128
+relbench 1.1.0
+sentence-transformers 5.7.0
+transformers 4.57.6
+pandas 2.3.3
+numpy 2.5.2
+scikit-learn 1.9.1
+lightgbm 4.7.0
+torch cuda 12.8 | cudnn 91002
+llama-server: ['/opt/llama/llama-server: error while loading shared libraries: libcuda.so.1: cannot open shared object file: No such file or directory']
+os (container): "Ubuntu 24.04.1 LTS"
+
+=== rel-f1: tables (full database, upto_test_timestamp=False) ===
+data source: {'db': 'download', 'task': 'download', 'from_cache': True}
+val_timestamp 2005-01-01 00:00:00 | test_timestamp 2010-01-01 00:00:00
+Loading Database object from /opt/cache/relbench/rel-f1/db...
+Done in 0.65 seconds.
+
+upto_test_timestamp=False: 9 tables, 97606 rows, 67 columns
+table | rows | columns | pkey | fkeys -> table | time col | first | last
+circuits | 77 | 8 | circuitId | - | - |  | 
+constructor_results | 12290 | 5 | constructorResultsId | raceId->races, constructorId->constructors | date | 1956-01-22 | 2023-07-30
+constructor_standings | 13051 | 7 | constructorStandingsId | raceId->races, constructorId->constructors | date | 1958-01-19 | 2023-07-30
+constructors | 211 | 4 | constructorId | - | - |  | 
+drivers | 857 | 7 | driverId | - | - |  | 
+qualifying | 9815 | 7 | qualifyId | raceId->races, driverId->drivers, constructorId->constructors | date | 1994-03-26 | 2023-07-29
+races | 1101 | 7 | raceId | circuitId->circuits | date | 1950-05-13 | 2023-11-26
+results | 26080 | 15 | resultId | raceId->races, driverId->drivers, constructorId->constructors | date | 1950-05-13 | 2023-07-30
+standings | 34124 | 7 | driverStandingsId | raceId->races, driverId->drivers | date | 1950-05-13 | 2023-07-30
+Loading Database object from /opt/cache/relbench/rel-f1/db...
+Done in 0.01 seconds.
+
+upto_test_timestamp=True: 9 tables, 74063 rows, 67 columns
+
+=== tasks ===
+
+driver-top3: source={'db': 'download', 'task': 'download', 'from_cache': True} type=TaskType.BINARY_CLASSIFICATION entity=drivers.driverId target=qualifying timedelta=30 days 00:00:00
+  train: rows=1353 entities=92 timestamps=59 (1994-02-28 .. 2004-10-03) positives=231 (0.171)
+  val: rows=588 entities=42 timestamps=27 (2005-03-02 .. 2008-03-16) positives=119 (0.202)
+  test: rows=726 entities=42 timestamps=30 (2010-03-02 .. 2013-03-16) positives=128 (0.176)
+
+driver-dnf: source={'db': 'cache', 'task': 'local', 'from_cache': True} type=TaskType.BINARY_CLASSIFICATION entity=drivers.driverId target=did_not_finish timedelta=30 days 00:00:00
+  train: rows=11411 entities=780 timestamps=420 (1950-05-20 .. 2004-10-03) positives=10046 (0.880)
+  val: rows=566 entities=42 timestamps=26 (2005-03-02 .. 2008-03-16) positives=441 (0.779)
+  test: rows=702 entities=42 timestamps=29 (2010-03-02 .. 2013-03-16) positives=495 (0.705)
+
+driver-position: source={'db': 'cache', 'task': 'download', 'from_cache': True} type=TaskType.REGRESSION entity=drivers.driverId target=position timedelta=60 days 00:00:00
+  train: rows=7453 entities=771 timestamps=254 (1950-06-19 .. 2004-09-03) label mean=13.901 std=7.026 min=1.00 max=39.00
+  val: rows=499 entities=47 timestamps=23 (2005-03-02 .. 2009-10-07) label mean=11.083 std=4.641 min=1.00 max=22.00
+  test: rows=760 entities=56 timestamps=33 (2010-03-02 .. 2016-05-29) label mean=11.926 std=5.214 min=1.00 max=24.00
